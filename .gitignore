@@ -1,0 +1,10 @@
+/build*/
+/atlas_demo
+/atlas_tests
+/atlas
+.DS_Store
+*.o
+*.dSYM/
+/data/
+/results/
+.env

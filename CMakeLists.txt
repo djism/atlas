@@ -1,0 +1,22 @@
+cmake_minimum_required(VERSION 3.16)
+project(atlas VERSION 0.1.0 LANGUAGES CXX)
+
+add_library(atlas_core src/geometry.cpp src/simulation.cpp src/matching.cpp)
+target_include_directories(atlas_core PUBLIC include)
+target_compile_features(atlas_core PUBLIC cxx_std_17)
+set_target_properties(atlas_core PROPERTIES CXX_EXTENSIONS OFF)
+if(MSVC)
+    target_compile_options(atlas_core PRIVATE /W4)
+else()
+    target_compile_options(atlas_core PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
+add_executable(atlas_demo apps/demo.cpp)
+target_link_libraries(atlas_demo PRIVATE atlas_core)
+
+include(CTest)
+if(BUILD_TESTING)
+    add_executable(atlas_tests tests/test_atlas.cpp)
+    target_link_libraries(atlas_tests PRIVATE atlas_core)
+    add_test(NAME atlas_geometry_and_motion COMMAND atlas_tests)
+endif()
