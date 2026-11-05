@@ -2,7 +2,8 @@
 
 **Learning vehicle motion estimation and SLAM through a C++ implementation.**
 
-Current milestone: **v0.1.0 — 2D geometry and motion recovery with known correspondences.**
+Latest release: **v0.1.0 — 2D geometry and motion recovery with known correspondences.**
+In progress (unreleased): least-squares alignment from many known matched pairs.
 
 Given two observations of stationary landmarks, Atlas estimates the translation
 and rotation that express the second observation in the first sensor's frame.
@@ -49,10 +50,13 @@ Matched-point RMSE (m): 0.000000
 
 1. The simulator knows fixed world landmarks and two true sensor poses.
 2. It generates two scans in the respective sensor frames.
-3. A two-pair estimator receives only those scans, with known matching order.
-4. It estimates relative rotation from the direction between the two points.
-5. It rotates second-scan points, then averages the remaining offsets for translation.
+3. `estimateFromMatchedPoints()` receives only those scans, with known matching order.
+4. It subtracts each scan's centroid, removing translation from the problem.
+5. It finds the least-squares rotation as `atan2(cross, dot)` over all centered pairs,
+   then translation as `first_centroid - R * second_centroid`. See [alignment](docs/alignment.md).
 6. The demo applies the estimate and reports error against the matched first-scan points.
+
+`estimateFromTwoPairs()` remains available as a simpler two-pair teaching baseline.
 
 The true poses are the answer key for this experiment, not estimator inputs.
 Nearest-neighbor search exists as a separate building block; it is **not** used
@@ -67,6 +71,7 @@ to establish the correspondences in the motion-recovery demo. ICP is not yet imp
 | `apps/demo.cpp` | Reproducible two-scan experiment |
 | `tests/test_atlas.cpp` | Numerical and invalid-input checks |
 | `docs/frames.md` | Coordinate conventions and an explanation of the experiment |
+| `docs/alignment.md` | Multi-point alignment derivation, degeneracy, and limits |
 | `docs/progress.md` | Daily milestones, validation, and next learning task |
 | `.github/workflows/ci.yml` | Linux/macOS build and test workflow |
 | `CHANGELOG.md` | Versioned milestone history |
@@ -79,13 +84,15 @@ and +y is left. The sensor and car frames coincide in this simulation.
 
 The simulator is an ideal 360-degree range filter over point landmarks, with no
 noise or occlusion. Visibility can change, so scan indices are not stable landmark
-identities. The estimator requires exactly two distinct, correctly paired points
-in each scan. Noisy or incorrect pairs need not align; small alignment error alone
-does not establish correct localization. Geometry/simulation inputs are assumed
+identities. The general estimator requires at least two correctly paired points,
+not all coincident, and rejects geometrically ambiguous rotations. With noise it
+returns the best fit to the given pairs, not the exact truth; it is not robust to
+incorrect pairs. Small alignment error alone does not establish correct localization. Geometry/simulation inputs are assumed
 finite; general numerical hardening remains future work.
 
 Tests cover transform inversion, frame conventions, sensor-coordinate output,
-range boundaries, nearest neighbors, relative motion, and invalid estimator inputs.
+range boundaries, nearest neighbors, centroids, two-pair and multi-point relative
+motion, angle wrapping, a fixed noisy least-squares example, and invalid inputs.
 CI is configured for Linux/macOS; a successful local run does not imply remote CI has run.
 
 ## Versioning and daily workflow
@@ -110,7 +117,7 @@ commits or schedule unattended pushes.
 
 - [x] 2D frame transformations and ideal scan simulation
 - [x] Nearest-point search and motion recovery from two known pairs
-- [ ] Centroids and rigid alignment using many known pairs
+- [x] Centroids and rigid alignment using many known pairs
 - [ ] Iterative correspondence search and 2D ICP
 - [ ] Noisy observations, rejection gates, and failure diagnostics
 - [ ] 3D registration and evaluation on driving data

@@ -19,24 +19,24 @@ int main() {
 
     // These scans happen to contain the same two landmarks in matching order.
     // The estimator receives scans only, never the world poses or landmarks.
-    const auto estimated = estimateFromTwoPairs(first_scan, second_scan);
+    const auto estimated = estimateFromMatchedPoints(first_scan, second_scan);
+    // Answer key only: the true second pose expressed in the first sensor frame.
     const auto expected_translation = inverseTransformPoint(
         {second_pose.x, second_pose.y}, first_pose);
     std::cout << std::fixed << std::setprecision(6)
-              << "Atlas v0.1.0 | ideal 2D simulation, known correspondences\n"
+              << "Atlas | ideal 2D simulation, known correspondences, "
+              << "least-squares matched-point alignment\n"
               << "Expected translation in first sensor frame: "
               << expected_translation.x << ", " << expected_translation.y << '\n'
               << "Estimated translation: " << estimated.x << ", " << estimated.y << '\n'
               << "Estimated rotation (degrees): " << estimated.theta * 180.0 / pi << '\n';
-    double squared_error = 0.0;
     for (std::size_t i = 0; i < second_scan.size(); ++i) {
         const auto aligned = transformPoint(second_scan[i], estimated);
-        const double error = std::hypot(aligned.x - first_scan[i].x,
-                                        aligned.y - first_scan[i].y);
-        squared_error += error * error;
         std::cout << "Aligned: " << aligned.x << ", " << aligned.y
-                  << " | matched-point error (m): " << error << '\n';
+                  << " | matched-point error (m): "
+                  << std::hypot(aligned.x - first_scan[i].x, aligned.y - first_scan[i].y)
+                  << '\n';
     }
     std::cout << "Matched-point RMSE (m): "
-              << std::sqrt(squared_error / second_scan.size()) << '\n';
+              << computeMatchedRmse(first_scan, second_scan, estimated) << '\n';
 }

@@ -40,8 +40,9 @@ not know which named frames you intend; its caller must keep them consistent.
 - Future mapping: sensor -> world, using an estimated world pose.
 
 For corresponding points, `first = R * second + t`.
-We recover `R` from the difference between the two segment directions, then
-`t` from the average of `first - R * second`.
+The two-pair baseline recovers `R` from the difference between the two segment
+directions, then `t` from the average of `first - R * second`. The general
+estimator uses centroids and many pairs; see [alignment](alignment.md).
 
 This is coordinate conversion, not physical movement of landmarks. Tiny errors
 around 1e-16 are ordinary floating-point rounding. Tests compare with tolerances.
