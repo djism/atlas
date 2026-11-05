@@ -10,6 +10,12 @@
 - Tests cover centroids, multi-point recovery, angle wrapping, reordering,
   collinear input, invalid input, and a fixed noisy least-squares example.
 - Documented the derivation and limitations in `docs/alignment.md`.
+- Added a one-wrong-pair experiment test showing a confident, badly wrong pose.
+- Added `findNearestCorrespondences()`: nearest-neighbor pairing under a guessed pose.
+- Added `alignIcp()` (point-to-point 2D ICP) with per-pass poses, nearest-pair
+  RMSE, and convergence reporting, in `icp.hpp`/`icp.cpp`.
+- Tests and demo cover ICP convergence, a large-rotation local minimum, and an
+  identical-corridor failure with zero residual. Documented in `docs/icp.md`.
 
 ## 0.1.0 — 2026-11-04
 

@@ -3,7 +3,7 @@
 **Learning vehicle motion estimation and SLAM through a C++ implementation.**
 
 Latest release: **v0.1.0 — 2D geometry and motion recovery with known correspondences.**
-In progress (unreleased): least-squares alignment from many known matched pairs.
+In progress (unreleased): least-squares alignment from many known pairs, and basic 2D ICP.
 
 Given two observations of stationary landmarks, Atlas estimates the translation
 and rotation that express the second observation in the first sensor's frame.
@@ -30,9 +30,9 @@ ctest --test-dir build --output-on-failure
 If CMake is not installed, the same code can be compiled directly on macOS/Linux:
 
 ```bash
-c++ -std=c++17 -Wall -Wextra -Wpedantic -Iinclude src/geometry.cpp src/simulation.cpp src/matching.cpp apps/demo.cpp -o atlas_demo
+c++ -std=c++17 -Wall -Wextra -Wpedantic -Iinclude src/geometry.cpp src/simulation.cpp src/matching.cpp src/icp.cpp apps/demo.cpp -o atlas_demo
 ./atlas_demo
-c++ -std=c++17 -Wall -Wextra -Wpedantic -Iinclude src/geometry.cpp src/simulation.cpp src/matching.cpp tests/test_atlas.cpp -o atlas_tests
+c++ -std=c++17 -Wall -Wextra -Wpedantic -Iinclude src/geometry.cpp src/simulation.cpp src/matching.cpp src/icp.cpp tests/test_atlas.cpp -o atlas_tests
 ./atlas_tests
 ```
 
@@ -44,6 +44,13 @@ Estimated rotation (degrees): 10.000000
 Aligned: 2.000000, 1.000000 | matched-point error (m): 0.000000
 Aligned: 4.000000, -1.000000 | matched-point error (m): 0.000000
 Matched-point RMSE (m): 0.000000
+
+ICP: x-axis example, sensor moved 0.6 m
+  pass 1: pose (0.266667, 0.000000, 0.000000 deg) | nearest-pair RMSE (m): 0.471405
+  pass 2: pose (0.600000, 0.000000, 0.000000 deg) | nearest-pair RMSE (m): 0.000000
+  ...
+ICP: FAILURE - identical-looking corridor, moved 1 m
+  ... | position error (m): 1.000000
 ```
 
 ## What the code does
@@ -59,8 +66,12 @@ Matched-point RMSE (m): 0.000000
 `estimateFromTwoPairs()` remains available as a simpler two-pair teaching baseline.
 
 The true poses are the answer key for this experiment, not estimator inputs.
-Nearest-neighbor search exists as a separate building block; it is **not** used
-to establish the correspondences in the motion-recovery demo. ICP is not yet implemented.
+
+Without known pairs, `alignIcp()` runs point-to-point 2D ICP: pair each second-scan
+point with its nearest first-scan point under the current guess, solve, repeat until
+the pose stops changing. The demo shows a converging case and a failure where ICP
+reports a perfect fit to a wrong pose. "Converged" means stable, not correct.
+See [ICP](docs/icp.md).
 
 ## Project layout
 
@@ -72,6 +83,7 @@ to establish the correspondences in the motion-recovery demo. ICP is not yet imp
 | `tests/test_atlas.cpp` | Numerical and invalid-input checks |
 | `docs/frames.md` | Coordinate conventions and an explanation of the experiment |
 | `docs/alignment.md` | Multi-point alignment derivation, degeneracy, and limits |
+| `docs/icp.md` | ICP loop, convergence example, and failure cases |
 | `docs/progress.md` | Daily milestones, validation, and next learning task |
 | `.github/workflows/ci.yml` | Linux/macOS build and test workflow |
 | `CHANGELOG.md` | Versioned milestone history |
@@ -118,7 +130,7 @@ commits or schedule unattended pushes.
 - [x] 2D frame transformations and ideal scan simulation
 - [x] Nearest-point search and motion recovery from two known pairs
 - [x] Centroids and rigid alignment using many known pairs
-- [ ] Iterative correspondence search and 2D ICP
+- [x] Iterative correspondence search and basic 2D ICP (noise-free examples)
 - [ ] Noisy observations, rejection gates, and failure diagnostics
 - [ ] 3D registration and evaluation on driving data
 - [ ] Local mapping and verified loop closure

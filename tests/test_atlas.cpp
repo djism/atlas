@@ -1,4 +1,5 @@
 #include "atlas/geometry.hpp"
+#include "atlas/icp.hpp"
 #include "atlas/matching.hpp"
 #include "atlas/simulation.hpp"
 #include <cmath>
@@ -173,7 +174,135 @@ int main() {
         check(std::abs(estimate.x - truth.x) < 0.02, "noisy translation x close");
         check(std::abs(estimate.y - truth.y) < 0.02, "noisy translation y close");
         check(std::abs(estimate.theta - truth.theta) < 0.01, "noisy rotation close");
+
+        // One wrong pair: second[2] paired with the observation of landmark 4,
+        // a many-to-one mistake nearest-neighbor matching can make. The estimator
+        // cannot detect it and returns a confident but badly wrong pose.
+        // Thresholds below describe THIS example, not general guarantees.
+        auto mispaired = first;
+        mispaired[2] = first[4];
+        const auto corrupted = estimateFromMatchedPoints(mispaired, cloud);
+        check(std::abs(corrupted.theta - truth.theta) > 0.17, "one wrong pair: rotation off by >10 deg");
+        check(std::hypot(corrupted.x - truth.x, corrupted.y - truth.y) > 1.0,
+              "one wrong pair: translation off by >1 m");
+        check(computeMatchedRmse(mispaired, cloud, corrupted) > 10 * estimate_rmse,
+              "one wrong pair: RMSE grows far above the noise level");
+        // Least squares spreads the damage: correct pairs are now misaligned too.
+        double worst_residual = 0.0;
+        std::size_t worst_index = 0;
+        for (std::size_t i = 0; i < cloud.size(); ++i) {
+            const auto aligned = transformPoint(cloud[i], corrupted);
+            const double residual = std::hypot(aligned.x - mispaired[i].x,
+                                               aligned.y - mispaired[i].y);
+            if (i != 2) check(residual > 0.1, "one wrong pair contaminates correct pairs");
+            if (residual > worst_residual) { worst_residual = residual; worst_index = i; }
+        }
+        check(worst_index == 2, "here the wrong pair has the largest residual");
+        // Removing the wrong pair restores a good estimate from the remaining four.
+        std::vector<Point2D> first_kept, second_kept;
+        for (std::size_t i = 0; i < cloud.size(); ++i) {
+            if (i == 2) continue;
+            first_kept.push_back(first[i]);
+            second_kept.push_back(cloud[i]);
+        }
+        const auto recovered = estimateFromMatchedPoints(first_kept, second_kept);
+        check(std::abs(recovered.x - truth.x) < 0.02, "wrong pair removed: x close");
+        check(std::abs(recovered.y - truth.y) < 0.02, "wrong pair removed: y close");
+        check(std::abs(recovered.theta - truth.theta) < 0.01, "wrong pair removed: rotation close");
     }
+    // ---- Correspondence guesses (one ICP pairing step) ----
+    {
+        // With the true pose as the guess, nearest neighbors find the true pairs.
+        const Pose2D truth{-2, 3, -0.4};
+        const auto matches = findNearestCorrespondences(applyPose(cloud, truth), cloud, truth);
+        check(matches == std::vector<std::size_t>({0, 1, 2, 3, 4}), "good guess finds true pairs");
+    }
+    {
+        // Points on the first-sensor x-axis; the sensor moved 0.6 m forward.
+        const std::vector<Point2D> first{{0,0}, {1,0}, {5,0}};
+        const std::vector<Point2D> second{{-0.6,0}, {0.4,0}, {4.4,0}};
+        // Guess "no motion": 0.4 is nearer 0 than 1, so two points share first[0].
+        check(findNearestCorrespondences(first, second, {0,0,0}) ==
+                  std::vector<std::size_t>({0, 0, 2}),
+              "zero guess gives many-to-one wrong pairing");
+        // Partially corrected guess (mean shift of those pairs) fixes the pairing.
+        check(findNearestCorrespondences(first, second, {0.8/3, 0, 0}) ==
+                  std::vector<std::size_t>({0, 1, 2}),
+              "improved guess gives correct pairing");
+    }
+    rejects([] { findNearestCorrespondences({}, {{0,0}}, {0,0,0}); }, "correspondence empty first");
+    rejects([] { findNearestCorrespondences({{0,0}}, {}, {0,0,0}); }, "correspondence empty second");
+    rejects([] { findNearestCorrespondences({{0,0}}, {{0,0}}, {0, 0, std::nan("")}); },
+            "correspondence nonfinite pose");
+    rejects([] { findNearestCorrespondences({{0,0}}, {{std::nan(""),0}}, {0,0,0}); },
+            "correspondence nonfinite point");
+    // ---- ICP: repeat pair -> solve until the pose stops changing ----
+    {
+        // x-axis example: pass 1 pairs wrongly (many-to-one), later passes fix it.
+        const std::vector<Point2D> first{{0,0}, {1,0}, {5,0}};
+        const std::vector<Point2D> second{{-0.6,0}, {0.4,0}, {4.4,0}};
+        const auto result = alignIcp(first, second, {0,0,0});
+        check(result.converged, "icp x-axis converges");
+        check(result.iterations == 3, "icp x-axis takes three passes");
+        near(result.second_in_first.x, 0.6, "icp x-axis translation");
+        near(result.second_in_first.y, 0, "icp x-axis lateral");
+        near(result.second_in_first.theta, 0, "icp x-axis rotation");
+        check(result.nearest_pair_rmse.size() == result.iterations, "icp one rmse per pass");
+        check(result.pose_per_pass.size() == result.iterations, "icp one pose per pass");
+        near(result.pose_per_pass.front().x, 0.8 / 3, "icp pass 1 is the partial mean shift");
+        near(result.pose_per_pass.back().x, result.second_in_first.x, "icp last pass is the result");
+        check(result.nearest_pair_rmse.front() > 0.1, "icp first pass has a wrong pair");
+        near(result.nearest_pair_rmse.back(), 0, "icp final pairs fit exactly");
+        // Stopping at the pass limit is reported, not hidden.
+        IcpOptions one_pass;
+        one_pass.max_iterations = 1;
+        const auto limited = alignIcp(first, second, {0,0,0}, one_pass);
+        check(!limited.converged && limited.iterations == 1, "icp reports hitting pass limit");
+    }
+    {
+        // Moderate motion from a zero guess: recovers the truth exactly.
+        const Pose2D truth{1, 0.5, 0.5};
+        const auto result = alignIcp(applyPose(cloud, truth), cloud, {0,0,0});
+        check(result.converged, "icp cloud converges");
+        near(result.second_in_first.x, truth.x, "icp cloud x");
+        near(result.second_in_first.y, truth.y, "icp cloud y");
+        near(result.second_in_first.theta, truth.theta, "icp cloud rotation");
+    }
+    {
+        // FAILURE: 162-degree turn from a zero guess. Pairing stabilizes on a wrong
+        // pose (local minimum). "converged" means stable, not correct.
+        const Pose2D truth{0, 0, 0.9 * pi};
+        const auto result = alignIcp(applyPose(cloud, truth), cloud, {0,0,0});
+        check(result.converged, "icp large turn still reports stable");
+        check(std::abs(result.second_in_first.theta - truth.theta) > pi / 2,
+              "icp large turn converges to wrong rotation");
+        check(result.nearest_pair_rmse.back() > 1.0, "icp large turn leaves high residual");
+    }
+    {
+        // FAILURE: identical-looking corridor. Poles at world x = 0..10; the first
+        // scan sees x = 0..9, then the car moves 1 m and sees x = 1..10, which in
+        // its own frame is again 0..9. The scans are identical, so ICP reports no
+        // motion with ZERO residual. Low residual does not prove correct pose.
+        std::vector<Point2D> window;
+        for (int i = 0; i < 10; ++i) {
+            window.push_back({static_cast<double>(i), 2});
+            window.push_back({static_cast<double>(i), -2});
+        }
+        const auto result = alignIcp(window, window, {0,0,0});  // truth: x = 1
+        check(result.converged, "icp corridor reports stable");
+        near(result.second_in_first.x, 0, "icp corridor misses the 1 m motion");
+        near(result.nearest_pair_rmse.back(), 0, "icp corridor fits perfectly anyway");
+    }
+    rejects([] { alignIcp({{0,0},{1,0}}, {{0,0},{1,0}}, {0,0,0}, IcpOptions{0, 1e-9, 1e-9}); },
+            "icp zero iterations");
+    rejects([] { alignIcp({{0,0},{1,0}}, {{0,0},{1,0}}, {0,0,0}, IcpOptions{10, -1, 1e-9}); },
+            "icp negative tolerance");
+    rejects([] { alignIcp({{0,0},{1,0}}, {{0,0},{1,0}}, {0,0,0}, IcpOptions{10, 1e-9, std::nan("")}); },
+            "icp NaN tolerance");
+    rejects([] { alignIcp({}, {{0,0},{1,0}}, {0,0,0}); }, "icp empty first");
+    rejects([] { alignIcp({{0,0},{1,0}}, {{0,0}}, {0,0,0}); }, "icp single second point");
+    // Every point pairs with the only first point: estimator cannot use the pairs.
+    rejects([] { alignIcp({{0,0}}, {{0,0},{1,0}}, {0,0,0}); }, "icp all pairs to one point");
     near(computeMatchedRmse({{3,4}}, {{0,0}}, {0,0,0}), 5, "rmse single pair 3-4-5");
     rejects([] { computeMatchedRmse({}, {}, {0,0,0}); }, "rmse empty");
     rejects([] { computeMatchedRmse({{0,0}}, {{0,0},{1,1}}, {0,0,0}); }, "rmse unequal");

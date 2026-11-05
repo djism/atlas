@@ -64,5 +64,28 @@ the true pose.
 
 It does not discover correspondences, and it is not robust: one wrong pair can
 pull the whole estimate, because squared error weights large residuals heavily.
+
+## Experiment: one wrong pair out of five
+
+Same noisy example, but `second[2]` is paired with the first-scan observation of
+landmark 4 (a many-to-one mistake nearest-neighbor matching can make).
+
+| Case | Turn | Turn error | Translation error | RMSE |
+| --- | --- | --- | --- | --- |
+| All pairs correct | +9.85 deg | 0.15 deg | ~6 mm | 0.018 m |
+| One pair wrong | -10.33 deg | 20.3 deg | ~1.77 m | 3.04 m |
+| Wrong pair removed | +9.88 deg | 0.12 deg | ~5 mm | 0.020 m |
+
+Per-pair residuals (m) with the wrong pair: 2.03, 0.69, **5.45**, 1.32, 3.21.
+The estimator does not throw: it cannot know a pair is wrong. To reduce the
+large miss, least squares rotates the whole pose, misaligning correct pairs too.
+
+Lessons for ICP and later rejection gates:
+
+- RMSE flagged the problem here only because we know the noise is about 2 cm.
+- The wrong pair had the largest residual in this example, so removing it
+  helped. That is not guaranteed; a correct pair here also reached 3.21 m.
+- Nearest-neighbor pairs will contain such mistakes, so ICP must iterate and
+  each pass must fix more pairs than it breaks.
 `computeMatchedRmse` measures error over known pairs; a low nearest-neighbor
 residual would not prove correct pairing.

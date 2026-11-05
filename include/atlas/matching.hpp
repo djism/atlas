@@ -31,4 +31,14 @@ Pose2D estimateFromMatchedPoints(const std::vector<Point2D>& first,
 double computeMatchedRmse(const std::vector<Point2D>& first,
                           const std::vector<Point2D>& second,
                           const Pose2D& second_in_first);
+
+// Correspondence GUESS for one ICP pass. Maps each second[i] (second-sensor
+// axes) into the first frame using the guessed pose second_in_first, then
+// returns matches where matches[i] is the index of the nearest point in first.
+// Several second points may share one first point; nearest does not mean same
+// landmark. Results depend on the guess. Brute force: O(first * second).
+// Throws std::invalid_argument for empty scans or nonfinite input.
+std::vector<std::size_t> findNearestCorrespondences(const std::vector<Point2D>& first,
+                                                    const std::vector<Point2D>& second,
+                                                    const Pose2D& second_in_first);
 }  // namespace atlas

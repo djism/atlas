@@ -72,6 +72,47 @@ Show what one wrong pairing does to the estimate (bias, RMSE), motivating
 correspondence search. Then iterate nearest-neighbor matching and alignment as
 a first 2D ICP loop, with a convergence example and a failure example.
 
+## 2026-11-05 — from known pairs to basic 2D ICP
+
+### Implemented
+
+- One-wrong-pair experiment (test + `docs/alignment.md`): one of five pairs wrong
+  turned a +10 degree turn into -10.3 degrees and shifted position ~1.8 m.
+- `findNearestCorrespondences()`: maps second-scan points into the first frame
+  with a guessed pose, then pairs each with its nearest first-scan point.
+- `alignIcp()` in new `icp.hpp`/`icp.cpp`: pair -> solve -> stop when the pose
+  stops changing; returns per-pass poses and nearest-pair RMSE.
+- Demo prints ICP passes for the driving scene (scan order reversed), the
+  x-axis example, and the identical-corridor failure.
+- `docs/icp.md` explains the loop, convergence table, and failure cases.
+
+### Lesson
+
+Least squares trusts its pairs: one wrong pair contaminates every residual.
+Pairing must happen in one frame, so the guess maps second-scan points first.
+ICP converges when the pairing stops changing; that is stability, not
+correctness. A 162-degree start stabilizes on a wrong pose (high residual), and
+an identical-looking corridor gives a wrong pose with zero residual.
+
+### Validation
+
+Apple Clang, C++17, `-Wall -Wextra -Wpedantic -Werror`: demo and tests pass.
+Mutation checks on scratch copies: skipping the pose transform in pairing and
+stopping ICP after one pass each made tests fail. CMake not available locally;
+remote CI result reported separately.
+
+### Limitations
+
+Noise-free scenes only. Every second-scan point is paired (no rejection of
+points without a partner). Brute-force nearest neighbor. Two failure examples,
+not a measured basin of convergence.
+
+### Next smallest step
+
+Add fixed noise and partial overlap to an ICP scene (a landmark visible in only
+one scan), observe the bias, then add a simple distance gate that rejects pairs
+farther than a threshold, and measure its effect against the answer key.
+
 ### Daily checkpoint template
 
 - Concept understood:

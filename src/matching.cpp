@@ -12,6 +12,11 @@ void requireFinite(const Point2D& p) {
         throw std::invalid_argument("matching requires finite point coordinates");
     }
 }
+void requireFinite(const Pose2D& pose) {
+    if (!std::isfinite(pose.x) || !std::isfinite(pose.y) || !std::isfinite(pose.theta)) {
+        throw std::invalid_argument("matching requires a finite pose");
+    }
+}
 }
 
 std::size_t findNearestPoint(const Point2D& query, const std::vector<Point2D>& points) {
@@ -119,10 +124,7 @@ double computeMatchedRmse(const std::vector<Point2D>& first,
     if (first.empty() || first.size() != second.size()) {
         throw std::invalid_argument("RMSE needs nonempty matched sets of equal size");
     }
-    if (!std::isfinite(second_in_first.x) || !std::isfinite(second_in_first.y) ||
-        !std::isfinite(second_in_first.theta)) {
-        throw std::invalid_argument("RMSE requires a finite pose");
-    }
+    requireFinite(second_in_first);
     double squared_error = 0.0;
     for (std::size_t i = 0; i < first.size(); ++i) {
         requireFinite(first[i]);
@@ -133,5 +135,23 @@ double computeMatchedRmse(const std::vector<Point2D>& first,
         squared_error += dx * dx + dy * dy;
     }
     return std::sqrt(squared_error / static_cast<double>(first.size()));
+}
+
+std::vector<std::size_t> findNearestCorrespondences(const std::vector<Point2D>& first,
+                                                    const std::vector<Point2D>& second,
+                                                    const Pose2D& second_in_first) {
+    if (first.empty() || second.empty()) {
+        throw std::invalid_argument("correspondence search needs nonempty scans");
+    }
+    requireFinite(second_in_first);
+    std::vector<std::size_t> matches;
+    matches.reserve(second.size());
+    for (const auto& point : second) {
+        requireFinite(point);
+        // Compare in ONE frame: move the second-scan point into first-sensor axes.
+        const Point2D in_first = transformPoint(point, second_in_first);
+        matches.push_back(findNearestPoint(in_first, first));
+    }
+    return matches;
 }
 }  // namespace atlas

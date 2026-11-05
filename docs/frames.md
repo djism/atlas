@@ -52,5 +52,5 @@ around 1e-16 are ordinary floating-point rounding. Tests compare with tolerances
 Indices match only because this experiment deliberately retains the same two
 landmarks in the same order. If visibility changes, equal indices can represent
 different landmarks. Nearest-neighbor search proposes a spatial match; it cannot
-prove identity and can match several queries to one point. General matching and
-rigid alignment will be developed and tested in later milestones.
+prove identity and can match several queries to one point. ICP (see [ICP](icp.md))
+repeats nearest-neighbor pairing and alignment, but its pairs remain guesses.
