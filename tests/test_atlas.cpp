@@ -444,7 +444,54 @@ int main() {
         check(result.converged(), "icp corridor reports stable");
         near(result.second_in_first.x, 0, "icp corridor misses the 1 m motion");
         near(result.nearest_pair_rmse.back(), 0, "icp corridor fits perfectly anyway");
+
+        // Ambiguity check: restarting 1 m forward/back reaches a different pose
+        // (about +/-0.9 m) that still explains 18 of 20 poles: flagged ambiguous.
+        const auto report = checkAmbiguity(window, window, result.second_in_first);
+        check(report.ambiguous && report.rival_found, "corridor flagged ambiguous");
+        check(report.solution_inliers == 20 && report.rival_inliers == 18, "corridor rival explains 18/20");
+        near(std::abs(report.rival.x), 0.9, "corridor rival about one pole spacing away");
+        // Only turn restarts: they reach a different pose that fits badly (0 inliers).
+        // A weak rival is not ambiguity, and the check misses the slide rival
+        // because no offset reaches it: "not ambiguous" does not prove uniqueness.
+        AmbiguityOptions turns_only;
+        turns_only.offsets = {{0, 0, 0.3}, {0, 0, -0.3}};
+        const auto weak = checkAmbiguity(window, window, result.second_in_first, turns_only);
+        check(weak.rival_found && weak.rival_inliers < 5 && !weak.ambiguous,
+              "corridor turn-only restarts: weak rival, not ambiguous");
     }
+    {
+        // Well-spread noisy cloud: every restart returns to the same pose.
+        const Pose2D truth{1, 0.5, 0.5};
+        const auto first = addGaussianNoise(applyPose(cloud, truth), 0.02, 1);
+        const auto second = addGaussianNoise(cloud, 0.02, 2);
+        const auto solution = alignIcp(first, second, {0,0,0}).second_in_first;
+        const auto report = checkAmbiguity(first, second, solution);
+        check(!report.ambiguous && !report.rival_found, "spread cloud not ambiguous");
+        check(report.solution_inliers == 5, "spread cloud solution explains all points");
+    }
+    {
+        // Wrong local minimum (162-degree turn from zero guess). With a half-turn
+        // restart offset, the check finds a rival that explains MORE points:
+        // evidence the reported solution is wrong, not just uncertain.
+        const Pose2D truth{0, 0, 0.9 * pi};
+        const auto first = applyPose(cloud, truth);
+        const auto solution = alignIcp(first, cloud, {0,0,0}).second_in_first;
+        AmbiguityOptions options;
+        options.offsets.push_back({0, 0, pi});
+        const auto report = checkAmbiguity(first, cloud, solution, options);
+        check(report.ambiguous && report.rival_inliers > report.solution_inliers,
+              "local minimum: rival explains more points");
+        near(report.rival.theta, truth.theta, "local minimum: rival is the true rotation");
+    }
+    check(countInliers({{0,0}, {1,0}}, {{0,0}, {1,0.5}}, {0,0,0}, 0.2) == 1, "count inliers");
+    rejects([] { countInliers({{0,0}}, {{0,0}}, {0,0,0}, 0); }, "inliers zero distance");
+    rejects([] { AmbiguityOptions o; o.offsets.clear();
+                 checkAmbiguity({{0,0},{1,0}}, {{0,0},{1,0}}, {0,0,0}, o); }, "ambiguity no offsets");
+    rejects([] { AmbiguityOptions o; o.rival_fraction = 0;
+                 checkAmbiguity({{0,0},{1,0}}, {{0,0},{1,0}}, {0,0,0}, o); }, "ambiguity zero fraction");
+    rejects([] { AmbiguityOptions o; o.rival_fraction = 1.5;
+                 checkAmbiguity({{0,0},{1,0}}, {{0,0},{1,0}}, {0,0,0}, o); }, "ambiguity fraction above 1");
     rejects([] { alignIcp({{0,0},{1,0}}, {{0,0},{1,0}}, {0,0,0}, IcpOptions{0, 1e-9, 1e-9}); },
             "icp zero iterations");
     rejects([] { alignIcp({{0,0},{1,0}}, {{0,0},{1,0}}, {0,0,0}, IcpOptions{10, -1, 1e-9}); },

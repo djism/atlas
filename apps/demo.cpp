@@ -82,7 +82,15 @@ int main() {
         corridor.push_back({static_cast<double>(i), 2.0});
         corridor.push_back({static_cast<double>(i), -2.0});
     }
-    printIcp("FAILURE - identical-looking corridor, moved 1 m",
-             alignIcp(corridor, corridor, {0.0, 0.0, 0.0}), {1.0, 0.0, 0.0});
+    const auto corridor_result = alignIcp(corridor, corridor, {0.0, 0.0, 0.0});
+    printIcp("FAILURE - identical-looking corridor, moved 1 m", corridor_result, {1.0, 0.0, 0.0});
     std::cout << "  -> zero residual, wrong pose: a good fit does not prove correct localization.\n";
+    const auto report = checkAmbiguity(corridor, corridor, corridor_result.second_in_first);
+    std::cout << "  ambiguity check: " << (report.ambiguous ? "AMBIGUOUS" : "no rival found");
+    if (report.rival_found) {
+        std::cout << " | rival pose x = " << report.rival.x << " m explains "
+                  << report.rival_inliers << " of " << corridor.size() << " points (solution: "
+                  << report.solution_inliers << ")";
+    }
+    std::cout << '\n';
 }

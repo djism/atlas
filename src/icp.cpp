@@ -1,6 +1,7 @@
 #include "atlas/icp.hpp"
 #include "atlas/geometry.hpp"
 #include "atlas/matching.hpp"
+#include <algorithm>
 #include <cmath>
 #include <stdexcept>
 
@@ -73,6 +74,54 @@ IcpResult alignIcp(const std::vector<Point2D>& first,
         }
     }
     result.status = IcpStatus::HitIterationLimit;
+    return result;
+}
+
+AmbiguityResult checkAmbiguity(const std::vector<Point2D>& first,
+                               const std::vector<Point2D>& second,
+                               const Pose2D& solution,
+                               const AmbiguityOptions& options) {
+    if (options.offsets.empty()) {
+        throw std::invalid_argument("ambiguity check needs at least one offset");
+    }
+    if (!(options.rival_fraction > 0.0 && options.rival_fraction <= 1.0)) {
+        throw std::invalid_argument("rival_fraction must be in (0, 1]");
+    }
+    AmbiguityResult result;
+    // Also validates scans, solution, and inlier_distance.
+    result.solution_inliers = countInliers(first, second, solution, options.inlier_distance);
+
+    for (const auto& offset : options.offsets) {
+        const Pose2D start{solution.x + offset.x, solution.y + offset.y,
+                           solution.theta + offset.theta};
+        IcpResult restart;
+        try {
+            restart = alignIcp(first, second, start, options.icp);
+        } catch (const std::invalid_argument&) {
+            continue;  // estimator could not use this restart's pairs
+        }
+        if (restart.status == IcpStatus::TooFewPairs) continue;
+        const Pose2D& candidate = restart.second_in_first;
+
+        // Different only if some point lands noticeably elsewhere.
+        double separation = 0.0;
+        for (const auto& point : second) {
+            const Point2D a = transformPoint(point, solution);
+            const Point2D b = transformPoint(point, candidate);
+            separation = std::max(separation, std::hypot(a.x - b.x, a.y - b.y));
+        }
+        if (separation <= options.inlier_distance) continue;
+
+        const std::size_t inliers = countInliers(first, second, candidate, options.inlier_distance);
+        if (!result.rival_found || inliers > result.rival_inliers) {
+            result.rival_found = true;
+            result.rival = candidate;
+            result.rival_inliers = inliers;
+        }
+    }
+    result.ambiguous = result.rival_found &&
+                       static_cast<double>(result.rival_inliers) >=
+                           options.rival_fraction * static_cast<double>(result.solution_inliers);
     return result;
 }
 }  // namespace atlas

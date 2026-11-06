@@ -25,6 +25,9 @@
 - Added a distance gate (`IcpOptions::max_pair_distance`, off by default) and
   `min_pairs`; per-pass kept-pair counts; gate-size experiments in `docs/icp.md`.
 - Added `docs/roadmap.md`: phases, done criteria, architecture, product quality bar.
+- Added `countInliers()` and `checkAmbiguity()`: ICP restarts from offsets flag a
+  different pose that explains almost as many points (corridor aliasing, wrong
+  local minima). Demo prints the corridor warning; documented in `docs/icp.md`.
 
 ## 0.1.0 — 2026-11-04
 

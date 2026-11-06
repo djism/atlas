@@ -154,4 +154,21 @@ std::vector<std::size_t> findNearestCorrespondences(const std::vector<Point2D>& 
     }
     return matches;
 }
+
+std::size_t countInliers(const std::vector<Point2D>& first,
+                         const std::vector<Point2D>& second,
+                         const Pose2D& second_in_first,
+                         double max_distance) {
+    if (!(max_distance > 0.0)) {
+        throw std::invalid_argument("inlier max_distance must be positive");
+    }
+    const auto matches = findNearestCorrespondences(first, second, second_in_first);
+    std::size_t inliers = 0;
+    for (std::size_t i = 0; i < second.size(); ++i) {
+        const Point2D moved = transformPoint(second[i], second_in_first);
+        const Point2D& partner = first[matches[i]];
+        if (std::hypot(moved.x - partner.x, moved.y - partner.y) <= max_distance) ++inliers;
+    }
+    return inliers;
+}
 }  // namespace atlas

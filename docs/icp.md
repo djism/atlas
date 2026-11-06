@@ -117,6 +117,38 @@ Lessons:
   scene-specific. The 1 m success rests on two lucky correct pairs.
 - "Lost" is reported as a status, not hidden or thrown, so a UI can show it.
 
+## Ambiguity check: "could a different answer fit almost as well?"
+
+Two different "the scene cannot tell" problems exist:
+
+- **Aliasing** (repeating structure, e.g. evenly spaced poles): sliding one
+  spacing maps poles onto other identical poles.
+- **Degeneracy** (no structure along a direction, e.g. a smooth hallway wall).
+
+The usual information-matrix test assumes fixed pairs. With fixed pairs, the
+20 corridor poles constrain motion fully, so that test would **not** flag the
+corridor. Degeneracy analysis is planned with line-based ICP on ray-cast walls.
+
+`checkAmbiguity(first, second, solution)` targets aliasing and wrong local
+minima. It restarts ICP from the solution plus each offset (default: +/-1 m in
+x and y, +/-0.3 rad) and scores each result with `countInliers` (points with a
+partner within 0.2 m). Inlier counts are used instead of RMSE because a tidy
+wrong answer can have lower RMSE than the truth: in the corridor, the wrong
+answer has RMSE 0 and the true pose 0.3 m. A rival counts if some point lands
+more than the inlier distance away under it, and it makes the result ambiguous
+if it explains at least 80% as many points as the solution.
+
+| Scene | Result |
+| --- | --- |
+| Identical corridor | AMBIGUOUS: rival at x = +/-0.9 m explains 18/20 (solution 20/20) |
+| Same, turn offsets only | weak rival (0 inliers), not ambiguous: slide rival never reached |
+| Noisy spread cloud | no rival: every restart returns to the same pose |
+| 162-degree local minimum, plus half-turn offset | rival is the true pose and explains **more** points |
+
+Limits: only rivals reachable from the given offsets are found, so "not
+ambiguous" does not prove uniqueness. Each offset costs one ICP run. Offsets,
+inlier distance, and fraction are scene-dependent choices.
+
 ## Current limits
 
 - Brute-force nearest neighbor, O(first x second) per pass.

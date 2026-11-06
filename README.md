@@ -74,7 +74,9 @@ the pose stops changing. The demo shows a converging case and a failure where IC
 reports a perfect fit to a wrong pose. "Converged" means stable, not correct.
 An optional distance gate drops pairs that are too far apart under the current
 guess; if too few survive, ICP reports `TooFewPairs` (localization lost) instead
-of a pose. Gate size must suit the initial-guess error. See [ICP](docs/icp.md).
+of a pose. Gate size must suit the initial-guess error. `checkAmbiguity()` restarts
+ICP from nearby offsets and warns when a clearly different pose explains almost as
+many points, as in the identical corridor. See [ICP](docs/icp.md).
 
 `addGaussianNoise()` adds seeded, cross-platform reproducible Gaussian noise to scans.
 
@@ -113,7 +115,8 @@ future work.
 Tests cover transform inversion, frame conventions, sensor-coordinate output,
 range boundaries, nearest neighbors, centroids, two-pair and multi-point relative
 motion, angle wrapping, a fixed noisy least-squares example, noise statistics,
-ICP convergence and failure cases, partial overlap, distance gating, and invalid inputs.
+ICP convergence and failure cases, partial overlap, distance gating, ambiguity
+detection, and invalid inputs.
 CI is configured for Linux/macOS; a successful local run does not imply remote CI has run.
 
 ## Versioning and daily workflow

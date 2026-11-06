@@ -156,6 +156,40 @@ success.
 Degeneracy diagnostic: report when the scene does not constrain motion in some
 direction (corridor case), so ICP can say "unobservable" instead of converged.
 
+## 2026-11-06 (session 2) — ambiguity check for aliasing and wrong minima
+
+### Implemented
+
+- `countInliers()`: points with a partner within a distance under a pose.
+- `checkAmbiguity()`: restarts ICP from the solution plus offsets, and flags a
+  clearly different rival that explains at least 80% as many points.
+- Demo prints the corridor warning: rival at x = 0.9 m explains 18/20 poles.
+
+### Lesson
+
+"The scene cannot tell" has two forms. Aliasing (repeating poles) is not caught
+by the fixed-pair information-matrix test, because paired poles constrain motion
+fully; degeneracy (featureless walls) is, and waits for line-based ICP. Inlier
+counts beat RMSE for comparing hypotheses: in the corridor the wrong answer had
+RMSE 0 and the truth 0.3 m. With a half-turn restart, the check found the true
+pose for the 162-degree local minimum, which explained more points.
+
+### Validation
+
+Apple Clang, C++17, `-Werror`: demo and tests pass. Mutation checks: removing
+the separation test and ignoring the rival fraction each failed tests. A
+turn-only test documents a missed rival: "not ambiguous" is not proof of uniqueness.
+
+### Limitations
+
+Finds only rivals reachable from chosen offsets; one ICP run per offset;
+offsets, inlier distance, and fraction are scene-dependent.
+
+### Next smallest step
+
+Ray-cast 2D LiDAR: describe a room as wall segments and compute where each beam
+hits, producing scans like a real planar LiDAR for the home-robot scenario.
+
 ### Daily checkpoint template
 
 - Concept understood:

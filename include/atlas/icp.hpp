@@ -50,4 +50,37 @@ IcpResult alignIcp(const std::vector<Point2D>& first,
                    const std::vector<Point2D>& second,
                    const Pose2D& initial_guess,
                    const IcpOptions& options = {});
+
+struct AmbiguityOptions {
+    // Restart offsets added to the solution's (x, y, theta), first-sensor axes.
+    std::vector<Pose2D> offsets{{1, 0, 0}, {-1, 0, 0}, {0, 1, 0}, {0, -1, 0},
+                                {0, 0, 0.3}, {0, 0, -0.3}};
+    // Inlier distance (meters). Also the separation test: a rival is "different"
+    // if some second-scan point lands farther than this from the solution's mapping.
+    double inlier_distance = 0.2;
+    // Ambiguous if a different rival has at least this fraction of the
+    // solution's inliers.
+    double rival_fraction = 0.8;
+    IcpOptions icp;  // used for each restart
+};
+
+struct AmbiguityResult {
+    bool ambiguous = false;
+    std::size_t solution_inliers = 0;
+    bool rival_found = false;  // a different pose was reached from some offset
+    Pose2D rival{0, 0, 0};     // the best-scoring different pose, if found
+    std::size_t rival_inliers = 0;
+};
+
+// Alias/ambiguity check (e.g. repeating structure): restarts ICP from the
+// solution plus each offset and asks whether a clearly different pose explains
+// almost as many points. Only rivals reachable from the given offsets are found,
+// so "not ambiguous" does not prove uniqueness. Costs one ICP run per offset.
+// Restarts that end TooFewPairs, or that the estimator rejects, are skipped.
+// Throws std::invalid_argument for empty offsets, nonpositive inlier_distance,
+// rival_fraction outside (0, 1], or invalid scans.
+AmbiguityResult checkAmbiguity(const std::vector<Point2D>& first,
+                               const std::vector<Point2D>& second,
+                               const Pose2D& solution,
+                               const AmbiguityOptions& options = {});
 }  // namespace atlas

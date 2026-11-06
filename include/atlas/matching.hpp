@@ -41,4 +41,14 @@ double computeMatchedRmse(const std::vector<Point2D>& first,
 std::vector<std::size_t> findNearestCorrespondences(const std::vector<Point2D>& first,
                                                     const std::vector<Point2D>& second,
                                                     const Pose2D& second_in_first);
+
+// Number of second-scan points that, mapped into the first frame by
+// second_in_first, have a nearest first-scan point within max_distance (meters).
+// A fit score that, unlike RMSE, is not dominated by a few large misses.
+// Throws std::invalid_argument for empty scans, nonfinite input, or a
+// nonpositive or NaN max_distance.
+std::size_t countInliers(const std::vector<Point2D>& first,
+                         const std::vector<Point2D>& second,
+                         const Pose2D& second_in_first,
+                         double max_distance);
 }  // namespace atlas
