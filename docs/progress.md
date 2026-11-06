@@ -113,6 +113,49 @@ Add fixed noise and partial overlap to an ICP scene (a landmark visible in only
 one scan), observe the bias, then add a simple distance gate that rejects pairs
 farther than a threshold, and measure its effect against the answer key.
 
+## 2026-11-06 — roadmap, seeded noise, partial overlap, distance gate
+
+### Implemented
+
+- `docs/roadmap.md`: Atlas as engine + evidence + experience; Phases 1-5 as the
+  ~8-week flagship, with done criteria, target architecture, and quality bar.
+- `addGaussianNoise(points, stddev, seed)`: own Box-Muller over `std::mt19937_64`,
+  because `std::normal_distribution` differs between libstdc++ and libc++.
+- Partial-overlap tests: a pole seen only in the second scan biased ICP by up to
+  1.9 m and 19 degrees; an extra first-scan pole caused no error.
+- Distance gate and `min_pairs` in `IcpOptions`; `IcpStatus` with explicit
+  `TooFewPairs`; per-pass kept-pair counts. Demo prints LOST when relevant.
+
+### Lesson
+
+Noise shifts the answer by about the noise size; a point without a partner can
+wreck it, because ICP must pair every second-scan point. A gate fixes this only
+if it is larger than the current guess error: from a zero guess, a 2-3 m gate
+was worse than none, while a good guess made 0.5-4 m gates all work. Gate size
+effects are not monotonic. "Lost" should be reported, not hidden.
+
+### Validation
+
+Apple Clang, C++17, `-Wall -Wextra -Wpedantic -Werror`: demo and tests pass.
+Noise statistics over 40000 values: mean, stddev within 3%, and 68.3% +/- 1%
+within one sigma. Mutation checks: uniform noise and a missing Box-Muller
+factor failed the shape check; ignoring the gate failed 13 checks; gating with
+the initial instead of the current guess failed the 2 -> 5 growth check.
+Two mistakes caught: a default `min_pairs` of 3 silently "lost" the two-landmark
+demo (fixed: default 2, undersized scans are invalid input), and the first gate
+tests could not detect stale-guess gating (fixed with the growth test).
+
+### Limitations
+
+Small synthetic scenes; isotropic noise; one seed per illustration; fixed gate.
+No observability/degeneracy diagnostic yet: the identical corridor still reports
+success.
+
+### Next smallest step
+
+Degeneracy diagnostic: report when the scene does not constrain motion in some
+direction (corridor case), so ICP can say "unobservable" instead of converged.
+
 ### Daily checkpoint template
 
 - Concept understood:

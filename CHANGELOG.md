@@ -16,6 +16,15 @@
   RMSE, and convergence reporting, in `icp.hpp`/`icp.cpp`.
 - Tests and demo cover ICP convergence, a large-rotation local minimum, and an
   identical-corridor failure with zero residual. Documented in `docs/icp.md`.
+- Added `addGaussianNoise()`: seeded Gaussian noise via Box-Muller over
+  `std::mt19937_64`, reproducible across standard libraries; statistical tests.
+- Tests and docs show partial overlap: a point seen only in the second scan
+  biases ICP, while an extra first-scan point is harmless here.
+- **Changed ICP API:** `IcpResult::converged` is now `converged()`, backed by
+  `IcpStatus` (`Converged`, `HitIterationLimit`, `TooFewPairs`).
+- Added a distance gate (`IcpOptions::max_pair_distance`, off by default) and
+  `min_pairs`; per-pass kept-pair counts; gate-size experiments in `docs/icp.md`.
+- Added `docs/roadmap.md`: phases, done criteria, architecture, product quality bar.
 
 ## 0.1.0 — 2026-11-04
 

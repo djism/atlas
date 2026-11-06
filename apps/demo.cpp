@@ -20,7 +20,10 @@ void printIcp(const char* title, const atlas::IcpResult& result,
                   << result.nearest_pair_rmse[i] << '\n';
     }
     const auto& final_pose = result.second_in_first;
-    std::cout << "  " << (result.converged ? "converged (pairs stable)" : "hit pass limit")
+    const char* status = result.status == atlas::IcpStatus::Converged ? "converged (pairs stable)"
+                       : result.status == atlas::IcpStatus::TooFewPairs ? "LOST: too few pairs"
+                                                                        : "hit pass limit";
+    std::cout << "  " << status
               << " | answer key (" << answer_key.x << ", " << answer_key.y << ", "
               << answer_key.theta * deg << " deg) | position error (m): "
               << std::hypot(final_pose.x - answer_key.x, final_pose.y - answer_key.y) << '\n';

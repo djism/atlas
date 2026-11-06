@@ -64,6 +64,52 @@ int main() {
     const auto local = simulateScan({{4,5}}, {5,3,pi/2}, 5);
     near(local[0].x, 2, "scan returns sensor x, not world x");
     near(local[0].y, 1, "scan returns sensor y, not world y");
+    // ---- Seeded Gaussian noise ----
+    {
+        const std::vector<Point2D> clean{{1,2}, {-3,0.5}, {4,-4}};
+        const auto a = addGaussianNoise(clean, 0.05, 42);
+        const auto b = addGaussianNoise(clean, 0.05, 42);
+        const auto c = addGaussianNoise(clean, 0.05, 43);
+        bool same = true, differs = false, moved = false;
+        for (std::size_t i = 0; i < clean.size(); ++i) {
+            same = same && a[i].x == b[i].x && a[i].y == b[i].y;
+            differs = differs || a[i].x != c[i].x || a[i].y != c[i].y;
+            moved = moved || a[i].x != clean[i].x;
+        }
+        check(same, "noise: same seed reproduces exactly");
+        check(differs, "noise: different seed gives different noise");
+        check(moved, "noise: nonzero stddev changes points");
+        check(clean[0].x == 1 && clean[0].y == 2, "noise: input left unchanged");
+        const auto unchanged = addGaussianNoise(clean, 0.0, 42);
+        for (std::size_t i = 0; i < clean.size(); ++i) {
+            check(unchanged[i].x == clean[i].x && unchanged[i].y == clean[i].y,
+                  "noise: zero stddev returns points unchanged");
+        }
+        rejects([] { addGaussianNoise({{0,0}}, -0.1, 1); }, "noise: negative stddev");
+        rejects([] { addGaussianNoise({{0,0}}, std::nan(""), 1); }, "noise: NaN stddev");
+
+        // Statistics over 20000 points (40000 values) at the origin, sigma = 0.05 m.
+        // Bounds are several standard errors wide; a fixed seed makes this deterministic.
+        const double sigma = 0.05;
+        const auto samples = addGaussianNoise(std::vector<Point2D>(20000, Point2D{0, 0}), sigma, 7);
+        double sum = 0, sum_sq = 0;
+        std::size_t within_one_sigma = 0;
+        for (const auto& p : samples) {
+            for (double v : {p.x, p.y}) {
+                sum += v;
+                sum_sq += v * v;
+                if (std::abs(v) <= sigma) ++within_one_sigma;
+            }
+        }
+        const double n = 2.0 * samples.size();
+        const double mean = sum / n;
+        const double sample_sigma = std::sqrt(sum_sq / n - mean * mean);
+        check(std::abs(mean) < 5 * sigma / std::sqrt(n), "noise: mean near zero");
+        check(std::abs(sample_sigma - sigma) < 0.03 * sigma, "noise: stddev within 3%");
+        // Gaussian: ~68.3% within one sigma. A uniform distribution with the same
+        // stddev gives ~57.7%, so this checks the shape, not just the spread.
+        check(std::abs(within_one_sigma / n - 0.6827) < 0.01, "noise: Gaussian shape");
+    }
     check(findNearestPoint({3,-1}, {{2,1},{4,-1}}) == 1, "nearest search");
     check(findNearestPoint({0,0}, {{-1,0},{1,0}}) == 0, "first tie wins");
     rejects([] { findNearestPoint({0,0}, {}); }, "empty nearest search");
@@ -242,7 +288,7 @@ int main() {
         const std::vector<Point2D> first{{0,0}, {1,0}, {5,0}};
         const std::vector<Point2D> second{{-0.6,0}, {0.4,0}, {4.4,0}};
         const auto result = alignIcp(first, second, {0,0,0});
-        check(result.converged, "icp x-axis converges");
+        check(result.converged(), "icp x-axis converges");
         check(result.iterations == 3, "icp x-axis takes three passes");
         near(result.second_in_first.x, 0.6, "icp x-axis translation");
         near(result.second_in_first.y, 0, "icp x-axis lateral");
@@ -257,23 +303,129 @@ int main() {
         IcpOptions one_pass;
         one_pass.max_iterations = 1;
         const auto limited = alignIcp(first, second, {0,0,0}, one_pass);
-        check(!limited.converged && limited.iterations == 1, "icp reports hitting pass limit");
+        check(!limited.converged() && limited.iterations == 1, "icp reports hitting pass limit");
     }
     {
         // Moderate motion from a zero guess: recovers the truth exactly.
         const Pose2D truth{1, 0.5, 0.5};
         const auto result = alignIcp(applyPose(cloud, truth), cloud, {0,0,0});
-        check(result.converged, "icp cloud converges");
+        check(result.converged(), "icp cloud converges");
         near(result.second_in_first.x, truth.x, "icp cloud x");
         near(result.second_in_first.y, truth.y, "icp cloud y");
         near(result.second_in_first.theta, truth.theta, "icp cloud rotation");
     }
     {
+        // Seeded noise on BOTH scans (sigma 2 cm): ICP still converges, near but
+        // not at the truth. Bounds describe this seed, not a general accuracy claim.
+        const Pose2D truth{1, 0.5, 0.5};
+        const auto first = addGaussianNoise(applyPose(cloud, truth), 0.02, 1);
+        const auto second = addGaussianNoise(cloud, 0.02, 2);
+        const auto result = alignIcp(first, second, {0,0,0});
+        const double position_error = std::hypot(result.second_in_first.x - truth.x,
+                                                 result.second_in_first.y - truth.y);
+        check(result.converged(), "icp noisy converges");
+        check(position_error > 1e-6, "icp noisy is not exact");
+        check(position_error < 0.1, "icp noisy position within 10 cm here");
+        check(std::abs(result.second_in_first.theta - truth.theta) < 0.01,
+              "icp noisy rotation within 0.01 rad here");
+    }
+    {
+        // Partial overlap. ICP pairs EVERY second-scan point, so a point seen only in
+        // the second scan is forced onto some first-scan point and biases the pose.
+        // Noise-free; numbers describe this scene, not a general claim.
+        const Pose2D truth{1, 0.5, 0.5};
+        const auto first = applyPose(cloud, truth);
+        auto second = cloud;
+        second.push_back({8, -5});  // new pole, visible only after moving
+        const auto biased = alignIcp(first, second, {0,0,0});
+        const auto& pose = biased.second_in_first;
+        check(biased.converged(), "overlap: still reports stable");
+        check(std::hypot(pose.x - truth.x, pose.y - truth.y) > 1.0, "overlap: position off by >1 m");
+        check(std::abs(pose.theta - truth.theta) > 0.17, "overlap: rotation off by >10 deg");
+        // The unpartnered point leaves the largest residual: what a gate can exploit.
+        const auto matches = findNearestCorrespondences(first, second, pose);
+        std::size_t worst = 0;
+        double worst_residual = 0;
+        for (std::size_t i = 0; i < second.size(); ++i) {
+            const auto aligned = transformPoint(second[i], pose);
+            const double r = std::hypot(aligned.x - first[matches[i]].x,
+                                        aligned.y - first[matches[i]].y);
+            if (r > worst_residual) { worst_residual = r; worst = i; }
+        }
+        check(worst == 5, "overlap: unpartnered point has largest residual here");
+        // Even a lone point close to the others biases the estimate.
+        auto second_near = cloud;
+        second_near.push_back({3, 1});
+        const auto near_result = alignIcp(first, second_near, {0,0,0}).second_in_first;
+        check(std::hypot(near_result.x - truth.x, near_result.y - truth.y) > 0.1,
+              "overlap: nearby lone point still biases by >10 cm");
+        // An extra point only in the FIRST scan is harmless here: nothing is forced
+        // to pair with it (unless it is nearer than a true partner).
+        auto first_extra = first;
+        first_extra.push_back(transformPoint({8, -5}, truth));
+        const auto clean = alignIcp(first_extra, cloud, {0,0,0}).second_in_first;
+        near(clean.x, truth.x, "overlap: extra first-scan point harmless x");
+        near(clean.y, truth.y, "overlap: extra first-scan point harmless y");
+        near(clean.theta, truth.theta, "overlap: extra first-scan point harmless rotation");
+
+        // ---- Distance gate on the same lone-pole scene ----
+        const auto gated = [&](double gate, const Pose2D& guess,
+                               const std::vector<Point2D>& f, const std::vector<Point2D>& s) {
+            IcpOptions options;
+            options.max_pair_distance = gate;
+            return alignIcp(f, s, guess, options);
+        };
+        const auto errorOf = [&](const IcpResult& r) {
+            return std::hypot(r.second_in_first.x - truth.x, r.second_in_first.y - truth.y);
+        };
+        // Right size (4 m) from a zero guess: lone pole dropped, exact recovery.
+        const auto right = gated(4.0, {0,0,0}, first, second);
+        check(right.converged() && right.pairs_kept_per_pass.back() == 5, "gate 4 m keeps 5 true pairs");
+        near(errorOf(right), 0, "gate 4 m recovers exact position");
+        near(right.second_in_first.theta, truth.theta, "gate 4 m recovers exact rotation");
+        // Too tight for a poor early guess: true pairs dropped on pass 1, and the
+        // result is WORSE than no gate at all. Stable, but wrong.
+        const auto tight = gated(2.0, {0,0,0}, first, second);
+        check(tight.converged() && tight.pairs_kept_per_pass.front() == 3, "gate 2 m keeps only 3 pairs");
+        check(errorOf(tight) > errorOf(biased), "gate 2 m from zero guess is worse than no gate");
+        check(std::abs(tight.second_in_first.theta - truth.theta) > 0.5, "gate 2 m rotation off by >28 deg");
+        // Not monotonic: a TIGHTER 1 m gate succeeds here. Only 2 pairs survive pass 1,
+        // they happen to be correct, and as the guess improves all 5 true pairs pass.
+        // Growth across passes requires gating with the CURRENT guess.
+        const auto bootstrap = gated(1.0, {0,0,0}, first, second);
+        check(bootstrap.converged() && bootstrap.pairs_kept_per_pass.front() == 2 &&
+                  bootstrap.pairs_kept_per_pass.back() == 5,
+              "gate 1 m: kept pairs grow 2 -> 5 as the guess improves");
+        near(errorOf(bootstrap), 0, "gate 1 m: recovers exact position");
+        // Far too tight: localization lost, reported clearly, last pose kept.
+        const auto lost = gated(0.5, {0,0,0}, first, second);
+        check(lost.status == IcpStatus::TooFewPairs, "gate 0.5 m from zero guess: too few pairs");
+        check(lost.iterations == 1 && lost.pose_per_pass.empty(), "lost on pass 1, no completed pass");
+        check(lost.second_in_first.x == 0 && lost.second_in_first.theta == 0, "lost keeps initial guess");
+        // With a good guess (as from tracking), a tight gate works even with noise.
+        const Pose2D good_guess{0.9, 0.4, 0.45};
+        const auto noisy_first = addGaussianNoise(first, 0.02, 1);
+        const auto noisy_second = addGaussianNoise(second, 0.02, 2);
+        const auto ungated_noisy = gated(std::numeric_limits<double>::infinity(), good_guess,
+                                         noisy_first, noisy_second);
+        const auto gated_noisy = gated(1.0, good_guess, noisy_first, noisy_second);
+        check(errorOf(ungated_noisy) > 0.5, "no gate, good guess: lone pole still biases >50 cm");
+        check(gated_noisy.converged() && gated_noisy.pairs_kept_per_pass.back() == 5,
+              "gate 1 m, good guess: keeps 5 true pairs under noise");
+        check(errorOf(gated_noisy) < 0.05, "gate 1 m, good guess: error near noise level");
+    }
+    rejects([] { IcpOptions o; o.max_pair_distance = 0; alignIcp({{0,0},{1,0},{0,1}}, {{0,0},{1,0},{0,1}}, {0,0,0}, o); },
+            "icp zero gate");
+    rejects([] { IcpOptions o; o.max_pair_distance = std::nan(""); alignIcp({{0,0},{1,0},{0,1}}, {{0,0},{1,0},{0,1}}, {0,0,0}, o); },
+            "icp NaN gate");
+    rejects([] { IcpOptions o; o.min_pairs = 1; alignIcp({{0,0},{1,0},{0,1}}, {{0,0},{1,0},{0,1}}, {0,0,0}, o); },
+            "icp min_pairs below 2");
+    {
         // FAILURE: 162-degree turn from a zero guess. Pairing stabilizes on a wrong
         // pose (local minimum). "converged" means stable, not correct.
         const Pose2D truth{0, 0, 0.9 * pi};
         const auto result = alignIcp(applyPose(cloud, truth), cloud, {0,0,0});
-        check(result.converged, "icp large turn still reports stable");
+        check(result.converged(), "icp large turn still reports stable");
         check(std::abs(result.second_in_first.theta - truth.theta) > pi / 2,
               "icp large turn converges to wrong rotation");
         check(result.nearest_pair_rmse.back() > 1.0, "icp large turn leaves high residual");
@@ -289,7 +441,7 @@ int main() {
             window.push_back({static_cast<double>(i), -2});
         }
         const auto result = alignIcp(window, window, {0,0,0});  // truth: x = 1
-        check(result.converged, "icp corridor reports stable");
+        check(result.converged(), "icp corridor reports stable");
         near(result.second_in_first.x, 0, "icp corridor misses the 1 m motion");
         near(result.nearest_pair_rmse.back(), 0, "icp corridor fits perfectly anyway");
     }
