@@ -28,6 +28,18 @@
 - Added `countInliers()` and `checkAmbiguity()`: ICP restarts from offsets flag a
   different pose that explains almost as many points (corridor aliasing, wrong
   local minima). Demo prints the corridor warning; documented in `docs/icp.md`.
+- Added ray-cast 2D LiDAR: `Segment2D`, `simulateLidarRanges()` (first hit per
+  beam, with occlusion), `rangesToPoints()`. Documented in `docs/lidar.md`.
+- Added `estimateNormals()` and point-to-line ICP (`IcpMethod::PointToLine`);
+  new `IcpStatus::Degenerate` when walls leave motion unconstrained.
+- Added `composePoses()` and `ScanTracker` (scan-to-scan tracking with a
+  constant-velocity guess and lost-scan flags).
+- Added a simplified grid planner: inflated `OccupancyGrid`, A*, path smoothing.
+- Added `wasm/`: Emscripten bindings (`simulateScan`, `alignScans`, `planRoute`,
+  `Tracker`) and a build script.
+- Added `web/`: React + TypeScript + Vite site with a live Three.js home, a
+  draggable ICP figure, and a three-experiment lab, all calling the C++ engine
+  in a Web Worker. Documented in `docs/sandbox.md`.
 
 ## 0.1.0 — 2026-11-04
 

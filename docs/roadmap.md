@@ -75,7 +75,7 @@ scripted trajectory reports drift and failure flags; docs explain each concept.
 Goal: the first public, playable demo.
 
 - C++ core compiled to WebAssembly (Emscripten), running in a Web Worker.
-- React + TypeScript + Vite app; PixiJS/Canvas2D rendering; small state store.
+- React + TypeScript + Vite app; Three.js 3D field plus Canvas2D figures (started 2026-11-07).
 - Scenario plugin interface; first scenario: **home robot** (rooms, furniture).
 - Visitor can move furniture, add obstacles, change sensor noise/range, and watch:
   scan rays, pairs, gated outliers, estimated vs true pose, residual/inlier charts,

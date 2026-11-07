@@ -3,8 +3,9 @@
 **Learning vehicle motion estimation and SLAM through a C++ implementation.**
 
 Latest release: **v0.1.0 — 2D geometry and motion recovery with known correspondences.**
-In progress (unreleased): least-squares alignment from many known pairs, basic 2D ICP,
-seeded noise, and a distance gate (roadmap Phase 1).
+In progress (unreleased): least-squares alignment, point-to-point and point-to-line
+2D ICP, seeded noise, a distance gate, ray-cast LiDAR, scan tracking, a simplified
+planner, and a live browser sandbox running the C++ engine via WebAssembly (roadmap Phase 1).
 
 Given two observations of stationary landmarks, Atlas estimates the translation
 and rotation that express the second observation in the first sensor's frame.
@@ -13,7 +14,7 @@ a ten-degree left turn.
 
 This is an educational foundation. It is not a complete SLAM system, any company's
 stack, or vehicle-ready software. Real-data odometry, robust matching, 3D mapping,
-loop closure, distributed evaluation, and the interactive sandbox are planned work,
+loop closure, map-based localization, and distributed evaluation are planned work,
 not implemented features.
 
 ## Build and run
@@ -31,9 +32,9 @@ ctest --test-dir build --output-on-failure
 If CMake is not installed, the same code can be compiled directly on macOS/Linux:
 
 ```bash
-c++ -std=c++17 -Wall -Wextra -Wpedantic -Iinclude src/geometry.cpp src/simulation.cpp src/matching.cpp src/icp.cpp apps/demo.cpp -o atlas_demo
+c++ -std=c++17 -Wall -Wextra -Wpedantic -Iinclude src/geometry.cpp src/simulation.cpp src/matching.cpp src/icp.cpp src/tracker.cpp src/planner.cpp apps/demo.cpp -o atlas_demo
 ./atlas_demo
-c++ -std=c++17 -Wall -Wextra -Wpedantic -Iinclude src/geometry.cpp src/simulation.cpp src/matching.cpp src/icp.cpp tests/test_atlas.cpp -o atlas_tests
+c++ -std=c++17 -Wall -Wextra -Wpedantic -Iinclude src/geometry.cpp src/simulation.cpp src/matching.cpp src/icp.cpp src/tracker.cpp src/planner.cpp tests/test_atlas.cpp -o atlas_tests
 ./atlas_tests
 ```
 
@@ -80,20 +81,38 @@ many points, as in the identical corridor. See [ICP](docs/icp.md).
 
 `addGaussianNoise()` adds seeded, cross-platform reproducible Gaussian noise to scans.
 
+`simulateLidarRanges()` ray-casts a planar LiDAR against wall segments, so walls
+occlude what is behind them ([lidar](docs/lidar.md)). On such scans, point-to-line
+ICP (`IcpMethod::PointToLine`) matches points to local wall lines and is several
+times more accurate than point-to-point; it reports `Degenerate` in a featureless
+hallway. `ScanTracker` chains scan-to-scan estimates; its drift is never corrected
+yet. A simplified A* planner (`planPath()`) plans on an inflated grid from the true
+pose, separately from localization.
+
+## Browser sandbox
+
+`web/` is an interactive site where the same C++ engine, compiled to WebAssembly,
+simulates the LiDAR, tracks the robot, matches scans, and plans routes live in a
+Web Worker. The world is simulated. See [sandbox](docs/sandbox.md) to build and run it.
+
 ## Project layout
 
 | Path | Purpose |
 | --- | --- |
 | `include/atlas/` | Public types and function declarations |
-| `src/` | Geometry, sensor simulation and noise, matching, and ICP implementations |
+| `src/` | Geometry, LiDAR simulation and noise, matching, ICP, tracking, and planning |
 | `apps/demo.cpp` | Reproducible known-pair and ICP experiments |
 | `tests/test_atlas.cpp` | Numerical and invalid-input checks |
 | `docs/frames.md` | Coordinate conventions and an explanation of the experiment |
 | `docs/alignment.md` | Multi-point alignment derivation, degeneracy, and limits |
-| `docs/icp.md` | ICP loop, convergence example, and failure cases |
+| `docs/icp.md` | ICP loop, point-to-line ICP, convergence example, and failure cases |
+| `docs/lidar.md` | Ray-cast LiDAR model and first point-to-point findings |
+| `docs/sandbox.md` | Browser sandbox: build, architecture, measurements, limits |
+| `wasm/` | Emscripten bindings and build script for the browser engine |
+| `web/` | React + TypeScript + Vite site (Three.js rendering, engine in a Web Worker) |
 | `docs/progress.md` | Daily milestones, validation, and next learning task |
 | `docs/roadmap.md` | Phases, done criteria, target architecture, product quality bar |
-| `.github/workflows/ci.yml` | Linux/macOS build and test workflow |
+| `.github/workflows/ci.yml` | Linux/macOS C++ build and test workflow (not the web build) |
 | `CHANGELOG.md` | Versioned milestone history |
 
 ## Conventions and limits
@@ -102,8 +121,8 @@ Distances are meters; angles are counterclockwise radians. Sensor +x is forward
 and +y is left. The sensor and car frames coincide in this simulation.
 `Pose2D` describes the source frame in a destination frame. See [frames](docs/frames.md).
 
-The simulator is a 360-degree range filter over point landmarks, with no occlusion;
-optional noise is independent per coordinate, a simplification of real LiDAR error,
+The point-landmark simulator is a 360-degree range filter with no occlusion; the
+ray-cast LiDAR adds occlusion by walls. Optional noise is independent per coordinate, a simplification of real LiDAR error,
 which lies mostly along the beam. Visibility can change, so scan indices are not stable landmark
 identities. The general estimator requires at least two correctly paired points,
 not all coincident, and rejects geometrically ambiguous rotations. With noise it
@@ -116,7 +135,8 @@ Tests cover transform inversion, frame conventions, sensor-coordinate output,
 range boundaries, nearest neighbors, centroids, two-pair and multi-point relative
 motion, angle wrapping, a fixed noisy least-squares example, noise statistics,
 ICP convergence and failure cases, partial overlap, distance gating, ambiguity
-detection, and invalid inputs.
+detection, ray-cast hits and occlusion, normals, point-to-line ICP, tracking,
+hallway degeneracy, planning, and invalid inputs.
 CI is configured for Linux/macOS; a successful local run does not imply remote CI has run.
 
 ## Versioning and daily workflow
@@ -143,10 +163,12 @@ commits or schedule unattended pushes.
 - [x] Nearest-point search and motion recovery from two known pairs
 - [x] Centroids and rigid alignment using many known pairs
 - [x] Iterative correspondence search and basic 2D ICP (noise-free examples)
-- [ ] **Phase 1:** robust 2D localization — noise, partial overlap, gates,
-      diagnostics, ray-cast LiDAR, scan tracking, occupancy-grid localization
-- [ ] **Phase 2:** interactive sandbox v1 — engine in the browser (WebAssembly),
-      home-robot scenario where visitors rearrange the world and watch localization
+- [ ] **Phase 1:** robust 2D localization — done: noise, partial overlap, gates,
+      ambiguity check, ray-cast LiDAR, point-to-line ICP, scan tracking;
+      remaining: occupancy-grid map and scan-to-map localization
+- [ ] **Phase 2:** interactive sandbox v1 — started: engine in the browser
+      (WebAssembly), home-robot scenario with a live 3D lab; remaining: map-based
+      localization in the lab, URL state, deployment, browser tests in CI
 - [ ] **Phase 3:** 3D LiDAR odometry on KITTI, measured against a baseline (headline result)
 - [ ] **Phase 4:** distributed evaluation sweeps with leases, retries, idempotent results
 - [ ] **Phase 5:** replay explorer for real-data results

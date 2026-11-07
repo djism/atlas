@@ -190,6 +190,57 @@ offsets, inlier distance, and fraction are scene-dependent.
 Ray-cast 2D LiDAR: describe a room as wall segments and compute where each beam
 hits, producing scans like a real planar LiDAR for the home-robot scenario.
 
+## 2026-11-06 to 2026-11-07 — ray-cast LiDAR, point-to-line ICP, tracking, planning, live sandbox
+
+### Implemented
+
+- Ray-cast 2D LiDAR: `Segment2D` walls, `simulateLidarRanges` (first hit per
+  beam, so walls occlude), `rangesToPoints` into sensor axes. See [lidar](lidar.md).
+- `estimateNormals` (local line fit per point) and point-to-line ICP
+  (`IcpMethod::PointToLine`, one Gauss-Newton step per pass). New status
+  `Degenerate` when the walls do not pin down the motion (hallway).
+- `composePoses` and `ScanTracker`: chains scan-to-scan estimates with a
+  constant-velocity guess; on failure it predicts and flags the scan lost.
+- Grid planner (simplified): `OccupancyGrid` inflated by the robot radius, A*,
+  and path smoothing; statuses Found / StartBlocked / GoalBlocked / NoPath.
+- `wasm/bindings.cpp` + `build.sh`: the core compiled with Emscripten 6.0.13,
+  exposing `simulateScan`, `alignScans`, `planRoute`, and a `Tracker` class.
+- `web/`: React + TypeScript + Vite site in the approved "Monochrome" design.
+  Hero with a live Three.js home, six-module summary, a draggable ICP figure,
+  and a three-tab lab (match scans, get it lost, rearrange the house). The
+  engine runs in a Web Worker. See [sandbox](sandbox.md).
+
+### Lesson
+
+Even noise-free wall scans have no exact point pairs: after moving, beams hit
+different spots on the same walls. Point-to-line fixes this (360 beams: 3.3 mm
+in 17 passes becomes 0.7 mm in 5). Chaining scans adds error without bound, and
+the constant-velocity fallback can make it much worse: with 1.5 m range the
+estimate ran 28 m away. Registering every scan is not the same as being right.
+
+### Validation
+
+Apple Clang, C++17, `-Wall -Wextra -Wpedantic`: all tests pass, demo runs.
+Tests cover ray hits and misses, occlusion, normals on lines and corners,
+point-to-line accuracy versus point-to-point, a tracker loop with no lost scans,
+a hallway flagged `Degenerate` on every step, and planner cases (doorway open
+and closed, U trap, blocked start/goal, diagonal squeeze). Web: typecheck and
+production build pass. A headless Chrome tour (software WebGL) checked the hero,
+the ICP figure (5 passes, 3.7 mm; re-converged after a drag; point-to-point 20
+passes), the tracker (1.3 cm after 2.6 m), short-range failure, and replanning
+around dropped boxes, with no console errors and no overflow at 390 px.
+
+### Limitations
+
+No map, so drift is never corrected. Planner uses the true pose and known floor
+plan. CI builds only the C++; the web build and browser checks are local. Not
+deployed. Mouse dragging in the hero was not tested by the automated tour.
+
+### Next smallest step
+
+Occupancy-grid map and scan-to-map localization: match each scan against a map
+of the house, not only the previous scan, so drift is corrected.
+
 ### Daily checkpoint template
 
 - Concept understood:
