@@ -149,6 +149,42 @@ Limits: only rivals reachable from the given offsets are found, so "not
 ambiguous" does not prove uniqueness. Each offset costs one ICP run. Offsets,
 inlier distance, and fraction are scene-dependent choices.
 
+## Point-to-line ICP
+
+On wall scans, beams land on different spots after the robot moves, so exact
+point matches do not exist and point-to-point ICP pulls points sideways along
+walls. `IcpMethod::PointToLine` instead minimizes each point's distance to its
+partner's **local line**:
+
+1. `estimateNormals` fits a line to each first-scan point and its 4 nearest
+   neighbors (closed-form 2x2 spread). If the across-line spread exceeds 5% of the
+   along-line spread (corners, clutter), the point has no valid normal and its
+   pairs are dropped.
+2. Error per pair: `n . (q_moved - p)`, the signed distance to p's line. Example:
+   wall y = 0, n = (0, 1), q_moved = (5, 0.1), nearest p = (4.8, 0). Point-to-point
+   error is about 0.22 m; point-to-line error is 0.1 m, only the true offset.
+3. Each pass takes one Gauss-Newton step: a small correction (dx, dy, dtheta)
+   moves a point m by about (dx, dy) + dtheta * (-m.y, m.x), so each error changes by
+   `n.x*dx + n.y*dy + cross(m, n)*dtheta`. Least squares gives a 3x3 system; the
+   correction is composed onto the current pose.
+
+Room with alcove and box, moved (0.3, 0.05) m and 5 degrees, zero initial guess:
+
+| Beams | Point-to-point, no noise | Point-to-line, no noise | Point-to-point, 1 cm | Point-to-line, 1 cm |
+| --- | --- | --- | --- | --- |
+| 90 | 2.9 cm, 8 passes | 3.8 mm, 5 passes | 2.6 cm | 7.4 mm |
+| 360 | 3.3 mm, 17 passes | 0.7 mm, 5 passes | 2.5 mm, 22 passes | 0.9 mm, 7 passes |
+| 1440 | 1.0 mm, hit limit | 0.02 mm, 5 passes | 1.7 mm, hit limit | 0.4 mm, 8 passes |
+
+Not exact without noise: points near corners and box edges get slightly wrong
+normals. With 1440 beams and 1 cm noise only 617/1440 normals were valid: five
+neighbors span about 5 cm there, so noise makes them look like a blob. The
+neighbor count should scale with scan density and noise.
+
+In a long hallway (two parallel walls, ends out of range), every normal points
+across the hallway, so nothing constrains motion along it. The 3x3 system is
+singular and ICP throws. A graded observability diagnostic is the next step.
+
 ## Current limits
 
 - Brute-force nearest neighbor, O(first x second) per pass.

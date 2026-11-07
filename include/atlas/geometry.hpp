@@ -1,5 +1,6 @@
 #pragma once
 #include "atlas/types.hpp"
+#include <cstddef>
 #include <vector>
 
 namespace atlas {
@@ -10,5 +11,27 @@ Point2D inverseTransformPoint(const Point2D& point, const Pose2D& source_in_dest
 
 // Mean of a nonempty point set, in the same frame as the inputs.
 // Throws std::invalid_argument for an empty set.
+// Chains frames: given frame B in frame A and frame C in frame B, returns
+// frame C in frame A. Translation: R(a.theta) * c.xy + a.xy; heading: a.theta + c.theta
+// (wrapped to (-pi, pi]).
+Pose2D composePoses(const Pose2D& b_in_a, const Pose2D& c_in_b);
+
 Point2D computeCentroid(const std::vector<Point2D>& points);
+
+struct NormalEstimate {
+    Point2D normal{0, 0};  // unit length when valid; sign is arbitrary
+    bool valid = false;
+};
+
+// Local line fit per point: takes the point and its nearest neighbors
+// (`neighbors` points in total, including itself) and fits a line through them.
+// The normal is perpendicular to that line, in the points' own frame. A
+// neighborhood is "line-like" when its spread across the line divided by its
+// spread along it is at most max_spread_ratio; otherwise (corners, clutter,
+// coincident points) valid is false. Brute-force neighbor search: O(n^2).
+// Throws std::invalid_argument for neighbors < 3, fewer points than neighbors,
+// a negative or NaN ratio, or nonfinite points.
+std::vector<NormalEstimate> estimateNormals(const std::vector<Point2D>& points,
+                                            std::size_t neighbors = 5,
+                                            double max_spread_ratio = 0.05);
 }  // namespace atlas

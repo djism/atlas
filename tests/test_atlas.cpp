@@ -1,7 +1,10 @@
 #include "atlas/geometry.hpp"
 #include "atlas/icp.hpp"
 #include "atlas/matching.hpp"
+#include "atlas/planner.hpp"
 #include "atlas/simulation.hpp"
+#include "atlas/tracker.hpp"
+#include <algorithm>
 #include <cmath>
 #include <cstdlib>
 #include <iostream>
@@ -109,6 +112,262 @@ int main() {
         // Gaussian: ~68.3% within one sigma. A uniform distribution with the same
         // stddev gives ~57.7%, so this checks the shape, not just the spread.
         check(std::abs(within_one_sigma / n - 0.6827) < 0.01, "noise: Gaussian shape");
+    }
+    // ---- Ray-cast LiDAR ----
+    {
+        // 4 beams: 0 deg (forward), 90, 180, 270. Sensor at origin facing +x.
+        LidarConfig four;
+        four.beam_count = 4;
+        four.max_range = 10;
+        near(beamAngle(1, four), pi / 2, "beam 1 at 90 degrees");
+        const Segment2D wall{{3,-1}, {3,2}};  // worked example: hit at t = 3, u = 1/3
+        const auto ranges = simulateLidarRanges({wall}, {0,0,0}, four);
+        near(ranges[0], 3, "forward beam hits wall at 3 m");
+        check(std::isinf(ranges[1]) && std::isinf(ranges[2]) && std::isinf(ranges[3]),
+              "other beams miss");
+        // Nearest wall wins: a wall at x = 3 hides the one at x = 5 (occlusion).
+        // Checked in both list orders, so "last hit wins" cannot pass by luck.
+        near(simulateLidarRanges({{{5,-1},{5,1}}, wall}, {0,0,0}, four)[0], 3, "nearer wall occludes (far first)");
+        near(simulateLidarRanges({wall, {{5,-1},{5,1}}}, {0,0,0}, four)[0], 3, "nearer wall occludes (near first)");
+        // Range limit, with the boundary counted as a hit.
+        LidarConfig short_range = four;
+        short_range.max_range = 2.5;
+        check(std::isinf(simulateLidarRanges({wall}, {0,0,0}, short_range)[0]), "beyond max range: no return");
+        short_range.max_range = 3;
+        near(simulateLidarRanges({wall}, {0,0,0}, short_range)[0], 3, "exactly max range: hit");
+        // Endpoints count; just past an end misses.
+        near(simulateLidarRanges({{{3,0},{3,2}}}, {0,0,0}, four)[0], 3, "hit at wall endpoint");
+        check(std::isinf(simulateLidarRanges({{{3,0.001},{3,2}}}, {0,0,0}, four)[0]), "just past endpoint misses");
+        // Wall behind the sensor: only the 180-degree beam sees it.
+        const auto behind = simulateLidarRanges({{{-3,-1},{-3,1}}}, {0,0,0}, four);
+        check(std::isinf(behind[0]), "forward beam ignores wall behind");
+        near(behind[2], 3, "backward beam hits wall behind");
+        // Parallel wall along y = 1: beam 0 runs alongside it; beam 1 (90 deg) hits it.
+        const auto parallel = simulateLidarRanges({{{-5,1},{5,1}}}, {0,0,0}, four);
+        check(std::isinf(parallel[0]), "parallel beam does not hit");
+        near(parallel[1], 1, "perpendicular beam hits");
+        // Frames: sensor at (5,3) heading 90 deg; forward is world +y. A wall at
+        // world y = 6 is 3 m ahead and appears at (3, 0) in SENSOR axes.
+        const Pose2D pose{5, 3, pi / 2};
+        const auto world_ranges = simulateLidarRanges({{{0,6},{10,6}}}, pose, four);
+        near(world_ranges[0], 3, "rotated sensor: forward hit at 3 m");
+        const auto points = rangesToPoints(world_ranges, four);
+        const auto expected = inverseTransformPoint({5, 6}, pose);
+        check(points.size() == 1, "rangesToPoints skips beams without return");
+        near(points[0].x, expected.x, "lidar point in sensor axes x");
+        near(points[0].y, expected.y, "lidar point in sensor axes y");
+        // Property: in a 10 m square room, all 360 beams hit, and every point,
+        // mapped back to world, lies on a wall.
+        const std::vector<Segment2D> room{{{0,0},{10,0}}, {{10,0},{10,10}},
+                                          {{10,10},{0,10}}, {{0,10},{0,0}}};
+        const Pose2D inside{4, 6, 0.3};
+        LidarConfig dense;  // 360 beams, 10 m
+        const auto room_ranges = simulateLidarRanges(room, inside, dense);
+        const auto room_points = rangesToPoints(room_ranges, dense);
+        check(room_points.size() == 360, "closed room: every beam returns");
+        bool on_walls = true;
+        for (const auto& p : room_points) {
+            const auto w = transformPoint(p, inside);
+            const double to_wall = std::min({std::abs(w.x), std::abs(w.x - 10),
+                                             std::abs(w.y), std::abs(w.y - 10)});
+            on_walls = on_walls && to_wall < 1e-9;
+        }
+        check(on_walls, "every room point lies on a wall");
+        LidarConfig no_beams = four;
+        no_beams.beam_count = 0;
+        rejects([&] { simulateLidarRanges({wall}, {0,0,0}, no_beams); }, "lidar zero beams");
+        LidarConfig bad_range = four;
+        bad_range.max_range = -1;
+        rejects([&] { simulateLidarRanges({wall}, {0,0,0}, bad_range); }, "lidar negative range");
+        rejects([&] { simulateLidarRanges({{{1,1},{1,1}}}, {0,0,0}, four); }, "lidar zero-length wall");
+        rejects([&] { simulateLidarRanges({{{1,std::nan("")},{1,1}}}, {0,0,0}, four); }, "lidar NaN wall");
+        rejects([&] { simulateLidarRanges({wall}, {0,0,std::nan("")}, four); }, "lidar NaN pose");
+        rejects([&] { rangesToPoints({1.0, 2.0}, four); }, "ranges size must match beams");
+    }
+    // ---- Composing poses ----
+    {
+        // B at (1,0) facing 90 deg in A; C is 1 m forward of B. In A, forward for
+        // B is +y, so C is at (1,1) facing 90 deg.
+        const auto c = composePoses({1, 0, pi / 2}, {1, 0, 0});
+        near(c.x, 1, "compose x");
+        near(c.y, 1, "compose y");
+        near(c.theta, pi / 2, "compose heading");
+        // A pose composed with its inverse is the identity.
+        const Pose2D p{2, -3, 2.5};
+        const auto back = inverseTransformPoint({0, 0}, p);  // A's origin in p's axes
+        const auto identity = composePoses(p, {back.x, back.y, -p.theta});
+        near(identity.x, 0, "compose with inverse x");
+        near(identity.y, 0, "compose with inverse y");
+        near(identity.theta, 0, "compose with inverse heading");
+        near(composePoses({0, 0, 3}, {0, 0, 0.5}).theta, 3.5 - 2 * pi, "compose wraps heading");
+    }
+    // ---- Normals: local line fits ----
+    {
+        // Points on the line y = 2x: normal is perpendicular to direction (1, 2).
+        std::vector<Point2D> line;
+        for (int i = 0; i < 8; ++i) line.push_back({0.5 * i, 1.0 * i});
+        const auto normals = estimateNormals(line);
+        bool all_valid = true, perpendicular = true, unit = true;
+        for (const auto& n : normals) {
+            all_valid = all_valid && n.valid;
+            perpendicular = perpendicular && std::abs(n.normal.x * 1 + n.normal.y * 2) < 1e-9;
+            unit = unit && std::abs(std::hypot(n.normal.x, n.normal.y) - 1) < 1e-9;
+        }
+        check(all_valid && perpendicular && unit, "normals on a line: valid, unit, perpendicular");
+        // Corner: the point at the bend has neighbors on two walls, so no line fits.
+        const std::vector<Point2D> corner{{-2,0}, {-1,0}, {0,0}, {0,1}, {0,2}};
+        check(!estimateNormals(corner)[2].valid, "corner point has no valid normal");
+        check(!estimateNormals({{1,1}, {1,1}, {1,1}}, 3)[0].valid, "coincident points: no normal");
+        rejects([] { estimateNormals({{0,0},{1,0},{2,0}}, 2); }, "normals need 3 neighbors");
+        rejects([] { estimateNormals({{0,0},{1,0}}, 3); }, "normals need enough points");
+        rejects([] { estimateNormals({{0,0},{1,0},{std::nan(""),0}}, 3); }, "normals NaN point");
+    }
+    // ---- Point-to-line ICP on ray-cast room scans ----
+    {
+        const std::vector<Segment2D> room{
+            {{0,0},{8,0}}, {{8,0},{8,2}}, {{8,2},{9.5,2}}, {{9.5,2},{9.5,4}}, {{9.5,4},{8,4}},
+            {{8,4},{8,6}}, {{8,6},{0,6}}, {{0,6},{0,0}},
+            {{2,4},{3,4}}, {{3,4},{3,5}}, {{3,5},{2,5}}, {{2,5},{2,4}}};  // alcove + box
+        const Pose2D before{4, 3, 0};
+        const Pose2D after{4.3, 3.05, 5 * pi / 180};
+        LidarConfig lidar;  // 360 beams, 10 m
+        const auto scan1 = rangesToPoints(simulateLidarRanges(room, before, lidar), lidar);
+        const auto scan2 = rangesToPoints(simulateLidarRanges(room, after, lidar), lidar);
+        const auto offset = inverseTransformPoint({after.x, after.y}, before);
+        const Pose2D truth{offset.x, offset.y, after.theta - before.theta};
+        const auto errorOf = [&](const IcpResult& r) {
+            return std::hypot(r.second_in_first.x - truth.x, r.second_in_first.y - truth.y);
+        };
+        const auto to_point = alignIcp(scan1, scan2, {0,0,0});
+        IcpOptions line_options;
+        line_options.method = IcpMethod::PointToLine;
+        const auto to_line = alignIcp(scan1, scan2, {0,0,0}, line_options);
+        // No noise, yet point-to-point is not exact: beams hit different wall spots.
+        check(errorOf(to_point) > 1e-3, "room point-to-point: millimeter-level error without noise");
+        check(to_line.converged(), "room point-to-line converges");
+        check(errorOf(to_line) < errorOf(to_point) / 3, "room point-to-line at least 3x more accurate");
+        check(errorOf(to_line) < 1e-3, "room point-to-line within 1 mm here");
+        check(std::abs(to_line.second_in_first.theta - truth.theta) < 0.001, "room point-to-line rotation");
+        check(to_line.iterations < to_point.iterations / 2, "room point-to-line needs far fewer passes");
+        check(to_line.pairs_kept_per_pass.back() < scan2.size(), "corner pairs without normals dropped");
+
+        // Hallway: two long parallel walls, ends out of range. Every normal is
+        // across the hallway, so nothing constrains motion along it: the solve refuses.
+        const std::vector<Segment2D> hallway{{{-50,-1},{50,-1}}, {{-50,1},{50,1}}};
+        const auto h1 = rangesToPoints(simulateLidarRanges(hallway, {0,0,0}, lidar), lidar);
+        const auto h2 = rangesToPoints(simulateLidarRanges(hallway, {0.5,0,0}, lidar), lidar);
+        // ---- Scan-to-scan tracking along a circle in the room ----
+        {
+            const auto truthAt = [&](int k) {
+                const double a = k * 0.05 / 1.5;  // 5 cm per scan on a 1.5 m radius
+                return Pose2D{5 + 1.5 * std::cos(a), 2.5 + 1.5 * std::sin(a), a + pi / 2};
+            };
+            ScanTracker tracker(truthAt(0));  // only the initial pose is given
+            const auto first_step = tracker.update(
+                rangesToPoints(simulateLidarRanges(room, truthAt(0), lidar), lidar));
+            check(!first_step.lost && first_step.pose_in_world.x == truthAt(0).x,
+                  "tracker first scan keeps initial pose");
+            std::size_t lost = 0;
+            TrackerStep last;
+            const int steps = 120;  // 6 m of travel
+            for (int k = 1; k <= steps; ++k) {
+                const auto scan = addGaussianNoise(
+                    rangesToPoints(simulateLidarRanges(room, truthAt(k), lidar), lidar), 0.01, 100 + k);
+                last = tracker.update(scan);
+                if (last.lost) ++lost;
+            }
+            const auto end = truthAt(steps);
+            const double heading_diff = last.pose_in_world.theta - end.theta;
+            check(lost == 0, "tracker loop: no lost steps");
+            check(tracker.scansProcessed() == steps + 1, "tracker counts scans");
+            // Drift accumulates; bounds describe this scene (measured ~2-4 cm).
+            check(std::hypot(last.pose_in_world.x - end.x, last.pose_in_world.y - end.y) < 0.1,
+                  "tracker loop: drift under 10 cm over 6 m here");
+            check(std::abs(std::atan2(std::sin(heading_diff), std::cos(heading_diff))) < 0.02,
+                  "tracker loop: heading drift under ~1 deg here");
+        }
+        {
+            // Hallway: every registration is degenerate, so every step is lost.
+            ScanTracker tracker({0, 0, 0});
+            std::size_t lost = 0;
+            for (int k = 0; k < 10; ++k) {
+                const auto step = tracker.update(
+                    rangesToPoints(simulateLidarRanges(hallway, {0.1 * k, 0, 0}, lidar), lidar));
+                if (step.lost) ++lost;
+            }
+            check(lost == 9, "tracker hallway: every registration flagged lost");
+        }
+        rejects([] { ScanTracker t({0, 0, std::nan("")}); }, "tracker NaN initial pose");
+
+        const auto hall = alignIcp(h1, h2, {0,0,0}, line_options);
+        check(hall.status == IcpStatus::Degenerate, "hallway point-to-line reports Degenerate");
+        check(hall.pose_per_pass.empty() && hall.second_in_first.x == 0, "degenerate keeps the guess");
+    }
+    // ---- Grid planning (A*) ----
+    {
+        const auto pathIsFree = [](const OccupancyGrid& g, const PlanResult& r) {
+            for (std::size_t i = 1; i < r.path.size(); ++i) {
+                if (!segmentIsFree(g, r.path[i - 1], r.path[i])) return false;
+            }
+            return true;
+        };
+        // Inflation: cells near a wall are blocked, far cells are free, outside is blocked.
+        const auto walled = buildPlanningGrid({{{5, 0}, {5, 3}}}, 10, 6, 0.05, 0.18);
+        check(walled.blockedAt({5.2, 1}), "cell within robot radius + margin of wall is blocked");
+        check(!walled.blockedAt({5.3, 1}), "cell beyond radius + margin is free");
+        check(walled.blocked(-1, 0) && walled.blocked(0, 1000), "outside the grid counts as blocked");
+
+        // Free space: straight line, smoothed to just start and goal.
+        const OccupancyGrid empty(10, 6, 0.05);
+        const auto straight = planPath(empty, {1, 1}, {8, 1});
+        check(straight.status == PlanStatus::Found && straight.path.size() == 2, "free space: straight path");
+        near(straight.length, 7, "free space: length equals distance");
+
+        // Wall x = 5 from y = 0 to 3: go around its top end.
+        const auto around = planPath(walled, {2, 1}, {8, 1});
+        check(around.status == PlanStatus::Found, "around wall: found");
+        check(pathIsFree(walled, around), "around wall: every segment collision-free");
+        check(around.length > 6 && around.length < 9.5, "around wall: plausible detour length");
+        check(around.path.front().x == 2 && around.path.back().x == 8, "path starts and ends exactly");
+
+        // Doorway: wall at x = 5 with a 1 m gap from y = 2.5 to 3.5. Open, then closed.
+        const std::vector<Segment2D> door{{{5, 0}, {5, 2.5}}, {{5, 3.5}, {5, 6}}};
+        const auto through = planPath(buildPlanningGrid(door, 10, 6, 0.05, 0.18), {2, 1}, {8, 1});
+        check(through.status == PlanStatus::Found, "open doorway: found");
+        bool used_gap = false;
+        for (const auto& p : through.path) used_gap = used_gap || (p.y > 2.5 && p.y < 3.5);
+        check(used_gap, "open doorway: path passes through the gap");
+        auto closed_door = door;
+        closed_door.push_back({{5, 2.5}, {5, 3.5}});
+        check(planPath(buildPlanningGrid(closed_door, 10, 6, 0.05, 0.18), {2, 1}, {8, 1}).status ==
+                  PlanStatus::NoPath, "closed doorway: no path");
+        // A gap narrower than the robot plus margin is closed for planning.
+        const std::vector<Segment2D> narrow{{{5, 0}, {5, 2.9}}, {{5, 3.1}, {5, 6}}};
+        check(planPath(buildPlanningGrid(narrow, 10, 6, 0.05, 0.18), {2, 1}, {8, 1}).status ==
+                  PlanStatus::NoPath, "20 cm gap too narrow for 18 cm robot");
+
+        // Shortest-path check in a U-shaped trap open toward the start. Going around
+        // the U's inflated corners (inflation 0.23 m) along straight lines is
+        // 2*hypot(1.77, 2.23) + 2.46 = 8.154 m; rounded inflation lets a shortest
+        // path cut slightly inside that, so it must not be longer. An overestimating
+        // heuristic (not admissible) produced 8.20 m here.
+        const std::vector<Segment2D> u{{{4, 1}, {6, 1}}, {{6, 1}, {6, 5}}, {{6, 5}, {4, 5}}};
+        const auto u_grid = buildPlanningGrid(u, 10, 6, 0.05, 0.18);
+        const auto trap = planPath(u_grid, {2, 3}, {8, 3});
+        check(trap.status == PlanStatus::Found && pathIsFree(u_grid, trap), "U trap: found, collision-free");
+        check(trap.length <= 2 * std::hypot(1.77, 2.23) + 2.46, "U trap: no longer than corner detour");
+
+        check(planPath(walled, {5, 1}, {8, 1}).status == PlanStatus::StartBlocked, "start on obstacle");
+        check(planPath(walled, {2, 1}, {5.1, 1}).status == PlanStatus::GoalBlocked, "goal on obstacle");
+
+        // No corner cutting: two blocked cells touching only at a corner.
+        OccupancyGrid corner(0.3, 0.3, 0.1);
+        corner.addSegment({{0.15, 0.05}, {0.15, 0.05}}, 0.01);  // blocks cell (1, 0)
+        corner.addSegment({{0.05, 0.15}, {0.05, 0.15}}, 0.01);  // blocks cell (0, 1)
+        const auto squeeze = planPath(corner, {0.05, 0.05}, {0.15, 0.15});
+        check(squeeze.status == PlanStatus::NoPath, "diagonal squeeze between corners refused");
+        rejects([] { OccupancyGrid g(0, 1, 0.1); }, "grid zero width");
+        rejects([&] { planPath(empty, {std::nan(""), 1}, {2, 2}); }, "plan NaN start");
     }
     check(findNearestPoint({3,-1}, {{2,1},{4,-1}}) == 1, "nearest search");
     check(findNearestPoint({0,0}, {{-1,0},{1,0}}) == 0, "first tie wins");
@@ -492,12 +751,13 @@ int main() {
                  checkAmbiguity({{0,0},{1,0}}, {{0,0},{1,0}}, {0,0,0}, o); }, "ambiguity zero fraction");
     rejects([] { AmbiguityOptions o; o.rival_fraction = 1.5;
                  checkAmbiguity({{0,0},{1,0}}, {{0,0},{1,0}}, {0,0,0}, o); }, "ambiguity fraction above 1");
-    rejects([] { alignIcp({{0,0},{1,0}}, {{0,0},{1,0}}, {0,0,0}, IcpOptions{0, 1e-9, 1e-9}); },
-            "icp zero iterations");
-    rejects([] { alignIcp({{0,0},{1,0}}, {{0,0},{1,0}}, {0,0,0}, IcpOptions{10, -1, 1e-9}); },
-            "icp negative tolerance");
-    rejects([] { alignIcp({{0,0},{1,0}}, {{0,0},{1,0}}, {0,0,0}, IcpOptions{10, 1e-9, std::nan("")}); },
-            "icp NaN tolerance");
+    // Options are set by field name: positional {a, b, c} silently shifts when fields are added.
+    rejects([] { IcpOptions o; o.max_iterations = 0;
+                 alignIcp({{0,0},{1,0}}, {{0,0},{1,0}}, {0,0,0}, o); }, "icp zero iterations");
+    rejects([] { IcpOptions o; o.translation_tolerance = -1;
+                 alignIcp({{0,0},{1,0}}, {{0,0},{1,0}}, {0,0,0}, o); }, "icp negative tolerance");
+    rejects([] { IcpOptions o; o.rotation_tolerance = std::nan("");
+                 alignIcp({{0,0},{1,0}}, {{0,0},{1,0}}, {0,0,0}, o); }, "icp NaN tolerance");
     rejects([] { alignIcp({}, {{0,0},{1,0}}, {0,0,0}); }, "icp empty first");
     rejects([] { alignIcp({{0,0},{1,0}}, {{0,0}}, {0,0,0}); }, "icp single second point");
     // Every point pairs with the only first point: estimator cannot use the pairs.

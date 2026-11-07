@@ -22,6 +22,7 @@ void printIcp(const char* title, const atlas::IcpResult& result,
     const auto& final_pose = result.second_in_first;
     const char* status = result.status == atlas::IcpStatus::Converged ? "converged (pairs stable)"
                        : result.status == atlas::IcpStatus::TooFewPairs ? "LOST: too few pairs"
+                       : result.status == atlas::IcpStatus::Degenerate ? "DEGENERATE: motion unconstrained"
                                                                         : "hit pass limit";
     std::cout << "  " << status
               << " | answer key (" << answer_key.x << ", " << answer_key.y << ", "

@@ -1,6 +1,7 @@
 #include "atlas/simulation.hpp"
 #include "atlas/geometry.hpp"
 #include <cmath>
+#include <limits>
 #include <random>
 #include <stdexcept>
 
@@ -47,5 +48,78 @@ std::vector<Point2D> addGaussianNoise(const std::vector<Point2D>& points,
         point.y += stddev * standardGaussian(generator);
     }
     return noisy;
+}
+
+namespace {
+double cross(const Point2D& v, const Point2D& w) { return v.x * w.y - v.y * w.x; }
+
+void validateLidar(const LidarConfig& config) {
+    if (config.beam_count == 0) {
+        throw std::invalid_argument("LiDAR needs at least one beam");
+    }
+    if (!(config.max_range > 0.0) || !std::isfinite(config.max_range)) {
+        throw std::invalid_argument("LiDAR max_range must be finite and positive");
+    }
+}
+}  // namespace
+
+double beamAngle(std::size_t beam, const LidarConfig& config) {
+    validateLidar(config);
+    return 2.0 * std::acos(-1.0) * static_cast<double>(beam) /
+           static_cast<double>(config.beam_count);
+}
+
+std::vector<double> simulateLidarRanges(const std::vector<Segment2D>& walls,
+                                        const Pose2D& pose,
+                                        const LidarConfig& config) {
+    validateLidar(config);
+    if (!std::isfinite(pose.x) || !std::isfinite(pose.y) || !std::isfinite(pose.theta)) {
+        throw std::invalid_argument("LiDAR pose must be finite");
+    }
+    for (const auto& wall : walls) {
+        if (!std::isfinite(wall.start.x) || !std::isfinite(wall.start.y) ||
+            !std::isfinite(wall.end.x) || !std::isfinite(wall.end.y)) {
+            throw std::invalid_argument("wall coordinates must be finite");
+        }
+        if (wall.start.x == wall.end.x && wall.start.y == wall.end.y) {
+            throw std::invalid_argument("walls must have nonzero length");
+        }
+    }
+
+    const Point2D origin{pose.x, pose.y};  // world frame
+    std::vector<double> ranges(config.beam_count, std::numeric_limits<double>::infinity());
+    for (std::size_t beam = 0; beam < config.beam_count; ++beam) {
+        // Beam direction in WORLD axes: sensor heading plus the beam's own angle.
+        const double angle = pose.theta + beamAngle(beam, config);
+        const Point2D d{std::cos(angle), std::sin(angle)};  // unit length
+        for (const auto& wall : walls) {
+            const Point2D e{wall.end.x - wall.start.x, wall.end.y - wall.start.y};
+            const double denominator = cross(d, e);
+            // Parallel (scale-aware: |d| = 1, compare with the wall's length).
+            if (std::abs(denominator) <= 1e-12 * std::hypot(e.x, e.y)) continue;
+            const Point2D to_start{wall.start.x - origin.x, wall.start.y - origin.y};
+            const double t = cross(to_start, e) / denominator;  // meters along the beam
+            const double u = cross(to_start, d) / denominator;  // 0..1 along the wall
+            if (t >= 0.0 && u >= 0.0 && u <= 1.0 && t <= config.max_range && t < ranges[beam]) {
+                ranges[beam] = t;
+            }
+        }
+    }
+    return ranges;
+}
+
+std::vector<Point2D> rangesToPoints(const std::vector<double>& ranges,
+                                    const LidarConfig& config) {
+    validateLidar(config);
+    if (ranges.size() != config.beam_count) {
+        throw std::invalid_argument("ranges must have one entry per beam");
+    }
+    std::vector<Point2D> points;
+    for (std::size_t beam = 0; beam < ranges.size(); ++beam) {
+        if (!std::isfinite(ranges[beam])) continue;  // no return
+        const double angle = beamAngle(beam, config);
+        points.push_back({ranges[beam] * std::cos(angle), ranges[beam] * std::sin(angle)});
+    }
+    return points;
 }
 }  // namespace atlas

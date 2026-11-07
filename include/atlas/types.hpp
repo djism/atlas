@@ -13,4 +13,10 @@ struct Pose2D {
     double y;
     double theta;
 };
+
+// Straight line segment from start to end (e.g. a wall), meters.
+struct Segment2D {
+    Point2D start;
+    Point2D end;
+};
 }  // namespace atlas

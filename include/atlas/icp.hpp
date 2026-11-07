@@ -5,7 +5,17 @@
 #include <vector>
 
 namespace atlas {
+enum class IcpMethod {
+    PointToPoint,  // closed-form solve of point-to-point error each pass
+    PointToLine,   // one Gauss-Newton step of point-to-line error each pass
+};
+
 struct IcpOptions {
+    IcpMethod method = IcpMethod::PointToPoint;
+    // PointToLine only: line fit per first-scan point (see estimateNormals).
+    // Pairs whose first-scan partner has no valid normal are dropped.
+    std::size_t normal_neighbors = 5;
+    double max_spread_ratio = 0.05;
     std::size_t max_iterations = 30;
     // Stop when one pass changes the pose by less than both tolerances.
     double translation_tolerance = 1e-9;  // meters
@@ -23,16 +33,19 @@ enum class IcpStatus {
     Converged,          // pose (and so pairing) stopped changing: stable, not correct
     HitIterationLimit,  // still changing after max_iterations
     TooFewPairs,        // gate left fewer than min_pairs: treat as localization lost
+    Degenerate,         // PointToLine: scene does not constrain some motion (e.g. hallway)
 };
 
 struct IcpResult {
-    // Pose of the second sensor frame in the first frame. For TooFewPairs, the
-    // last estimate before the failing pass (possibly the initial guess).
+    // Pose of the second sensor frame in the first frame. For TooFewPairs and
+    // Degenerate, the last estimate before the failing pass (possibly the guess).
     Pose2D second_in_first;
     IcpStatus status = IcpStatus::HitIterationLimit;
     std::size_t iterations = 0;  // passes started, including a failing one
     // Per completed pass: RMSE over KEPT nearest-neighbor pairs (may be wrong
     // pairs; a gate lowers this by construction), pose, and kept-pair count.
+    // The RMSE is of the error the method minimizes: point-to-point distance,
+    // or for PointToLine the distance from each point to its partner's line.
     std::vector<double> nearest_pair_rmse;
     std::vector<Pose2D> pose_per_pass;
     std::vector<std::size_t> pairs_kept_per_pass;
@@ -40,12 +53,17 @@ struct IcpResult {
     bool converged() const { return status == IcpStatus::Converged; }
 };
 
-// Point-to-point 2D ICP. Each pass pairs every second-scan point with its
-// nearest first-scan point under the current guess, drops pairs beyond the
-// distance gate, then solves for the full pose with estimateFromMatchedPoints.
+// 2D ICP. Each pass pairs every second-scan point with its nearest first-scan
+// point under the current guess and drops pairs beyond the distance gate.
+// PointToPoint then solves the full pose with estimateFromMatchedPoints.
+// PointToLine minimizes each point's distance to its partner's local line
+// (normals fitted once on the first scan) with one linearized step per pass;
+// sliding along a wall costs nothing, so wall scans need no exact point matches.
 // Local method: a poor initial guess or a repetitive scene can converge to a
-// wrong pose. Throws std::invalid_argument for invalid input or options, or
-// when kept pairs are unusable by the estimator (e.g. all to one point).
+// wrong pose. For PointToLine, a singular linear system (scene does not
+// constrain some motion) ends with status Degenerate. Throws
+// std::invalid_argument for invalid input or options, or when point-to-point
+// pairs are unusable (e.g. all to one point).
 IcpResult alignIcp(const std::vector<Point2D>& first,
                    const std::vector<Point2D>& second,
                    const Pose2D& initial_guess,
