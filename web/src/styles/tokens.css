@@ -1,0 +1,62 @@
+/* Atlas design tokens: monochrome, map-first.
+   One rule above all: blue (--signal) is reserved for what the sensor sees and
+   what the robot believes. Everything else is ink on paper.
+   Scene colors for three.js mirror these in src/field/palette.ts. */
+:root {
+  color-scheme: light;
+
+  /* color */
+  --ink: #0b0c0e;
+  --ink-soft: #24272c;
+  --ink-hover: #2a2d33;
+  --paper: #ffffff;
+  --mist: #f2f3f5;
+  --mist-hover: #e6e8ec;
+  --line: #dcdfe4;
+  --dim: #5a616c;
+  --signal: #2346ff;
+  --ok: #0e8a4f;
+  --warn: #b25e00;
+  --bad: #c0262d;
+
+  /* type */
+  --font-display: "Archivo", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-body: "Archivo", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  --text-hero: 800 clamp(44px, 5.1vw, 84px) / 0.94 var(--font-display);
+  --text-h2: 800 clamp(38px, 4.6vw, 72px) / 0.98 var(--font-display);
+  --text-h3: 800 clamp(22px, 1.8vw, 25px) / 1.1 var(--font-display);
+  --text-lede: 400 clamp(18px, 1.45vw, 21px) / 1.5 var(--font-body);
+  --text-body: 400 17px / 1.55 var(--font-body);
+  --text-small: 400 15px / 1.5 var(--font-body);
+  --text-ui: 600 14px / 1 var(--font-body);
+  --text-label: 500 12px / 1.3 var(--font-mono);
+  --display-stretch: 110%;
+  --display-tracking: -0.03em;
+  --label-tracking: 0.08em;
+
+  /* space (4 px base) */
+  --s-1: 4px;
+  --s-2: 8px;
+  --s-3: 12px;
+  --s-4: 16px;
+  --s-5: 24px;
+  --s-6: 32px;
+  --s-7: 48px;
+  --s-8: 72px;
+  --s-9: clamp(80px, 10vw, 140px); /* between sections */
+  --gutter: clamp(16px, 5vw, 72px);
+
+  /* shape & depth */
+  --r-pill: 999px;
+  --r-control: 8px;
+  --r-card: 14px;
+  --shadow-float: 0 2px 10px rgba(11, 12, 14, 0.08);
+  --shadow-card: 0 14px 44px rgba(11, 12, 14, 0.12), 0 2px 6px rgba(11, 12, 14, 0.06);
+
+  /* motion */
+  --ease: cubic-bezier(0.2, 0.7, 0.2, 1);
+  --t-fast: 0.15s;
+  --t-base: 0.25s;
+  --t-panel: 0.4s;
+}

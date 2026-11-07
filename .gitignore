@@ -8,3 +8,8 @@
 /data/
 /results/
 .env
+
+# Web sandbox
+/web/node_modules/
+/web/dist/
+/web/src/engine/generated/
