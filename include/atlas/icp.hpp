@@ -1,4 +1,5 @@
 #pragma once
+#include "atlas/geometry.hpp"
 #include "atlas/types.hpp"
 #include <cstddef>
 #include <limits>
@@ -49,6 +50,9 @@ struct IcpResult {
     std::vector<double> nearest_pair_rmse;
     std::vector<Pose2D> pose_per_pass;
     std::vector<std::size_t> pairs_kept_per_pass;
+    // PointToLine only: translation observability of the last completed pass's
+    // kept pairs, weak direction in FIRST-frame axes. Default (weak = 0) if none.
+    TranslationObservability observability;
 
     bool converged() const { return status == IcpStatus::Converged; }
 };
@@ -65,6 +69,15 @@ struct IcpResult {
 // std::invalid_argument for invalid input or options, or when point-to-point
 // pairs are unusable (e.g. all to one point).
 IcpResult alignIcp(const std::vector<Point2D>& first,
+                   const std::vector<Point2D>& second,
+                   const Pose2D& initial_guess,
+                   const IcpOptions& options = {});
+
+// Same, with normals for `first` fitted once by the caller (e.g. a fixed map
+// registered against many scans). Used only by PointToLine; one per first
+// point. An empty vector means "fit them here". Throws on a size mismatch.
+IcpResult alignIcp(const std::vector<Point2D>& first,
+                   const std::vector<NormalEstimate>& first_normals,
                    const std::vector<Point2D>& second,
                    const Pose2D& initial_guess,
                    const IcpOptions& options = {});

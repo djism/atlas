@@ -1,5 +1,6 @@
 #include "atlas/geometry.hpp"
 #include "atlas/icp.hpp"
+#include "atlas/mapping.hpp"
 #include "atlas/matching.hpp"
 #include "atlas/simulation.hpp"
 #include <cmath>
@@ -28,6 +29,18 @@ void printIcp(const char* title, const atlas::IcpResult& result,
               << " | answer key (" << answer_key.x << ", " << answer_key.y << ", "
               << answer_key.theta * deg << " deg) | position error (m): "
               << std::hypot(final_pose.x - answer_key.x, final_pose.y - answer_key.y) << '\n';
+}
+
+// Printing only: '#' occupied, '.' free, ' ' unknown; +y is up. Algorithm: src/mapping.cpp.
+void printMap(const atlas::OccupancyMap& map) {
+    for (long row = static_cast<long>(map.rows()) - 1; row >= 0; --row) {
+        std::cout << "  ";
+        for (long column = 0; column < static_cast<long>(map.columns()); ++column) {
+            const auto s = map.state(column, row);
+            std::cout << (s == atlas::CellState::Occupied ? '#' : s == atlas::CellState::Free ? '.' : ' ');
+        }
+        std::cout << '\n';
+    }
 }
 }  // namespace
 
@@ -94,4 +107,17 @@ int main() {
                   << report.solution_inliers << ")";
     }
     std::cout << '\n';
+
+    // Mapping with known poses: a room 8 x 6 m with an alcove and a 1 m box,
+    // scanned from three answer-key poses, at 0.25 m cells.
+    const std::vector<Segment2D> room{
+        {{0,0},{8,0}}, {{8,0},{8,2}}, {{8,2},{9.5,2}}, {{9.5,2},{9.5,4}}, {{9.5,4},{8,4}},
+        {{8,4},{8,6}}, {{8,6},{0,6}}, {{0,6},{0,0}},
+        {{2,4},{3,4}}, {{3,4},{3,5}}, {{3,5},{2,5}}, {{2,5},{2,4}}};
+    LidarConfig lidar;  // 360 beams, 10 m
+    OccupancyMap map({-0.5, -0.5}, 10.5, 7, 0.25);
+    for (const Pose2D& pose : {Pose2D{1.5, 1.5, 0}, Pose2D{6.5, 1.5, 1}, Pose2D{4, 3, 3}})
+        map.integrateScan(simulateLidarRanges(room, pose, lidar), lidar, pose);
+    std::cout << "\nOccupancy map from 3 scans at known poses (# occupied, . free, blank unknown):\n";
+    printMap(map);
 }

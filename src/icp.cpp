@@ -77,6 +77,15 @@ IcpResult alignIcp(const std::vector<Point2D>& first,
                    const std::vector<Point2D>& second,
                    const Pose2D& initial_guess,
                    const IcpOptions& options) {
+    std::vector<NormalEstimate> none;
+    return alignIcp(first, none, second, initial_guess, options);
+}
+
+IcpResult alignIcp(const std::vector<Point2D>& first,
+                   const std::vector<NormalEstimate>& precomputed_normals,
+                   const std::vector<Point2D>& second,
+                   const Pose2D& initial_guess,
+                   const IcpOptions& options) {
     if (options.max_iterations == 0) {
         throw std::invalid_argument("ICP needs at least one iteration");
     }
@@ -96,11 +105,16 @@ IcpResult alignIcp(const std::vector<Point2D>& first,
     }
 
     const bool to_line = options.method == IcpMethod::PointToLine;
-    // Normals depend only on the first scan, so fit them once.
-    std::vector<NormalEstimate> first_normals;
-    if (to_line) {
-        first_normals = estimateNormals(first, options.normal_neighbors, options.max_spread_ratio);
+    if (!precomputed_normals.empty() && precomputed_normals.size() != first.size()) {
+        throw std::invalid_argument("ICP needs one precomputed normal per first point");
     }
+    // Normals depend only on the first scan, so fit them once (or reuse the caller's).
+    std::vector<NormalEstimate> fitted;
+    if (to_line && precomputed_normals.empty()) {
+        fitted = estimateNormals(first, options.normal_neighbors, options.max_spread_ratio);
+    }
+    const std::vector<NormalEstimate>& first_normals =
+        precomputed_normals.empty() ? fitted : precomputed_normals;
 
     IcpResult result;
     result.second_in_first = initial_guess;
@@ -151,6 +165,7 @@ IcpResult alignIcp(const std::vector<Point2D>& first,
             }
             result.nearest_pair_rmse.push_back(
                 std::sqrt(squared / static_cast<double>(kept_second.size())));
+            result.observability = translationObservability(kept_normals);
         } else {
             estimate = estimateFromMatchedPoints(kept_first, kept_second);
             result.nearest_pair_rmse.push_back(computeMatchedRmse(kept_first, kept_second, estimate));

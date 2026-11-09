@@ -102,4 +102,35 @@ std::vector<NormalEstimate> estimateNormals(const std::vector<Point2D>& points,
     }
     return normals;
 }
+
+TranslationObservability translationObservability(const std::vector<Point2D>& unit_normals) {
+    if (unit_normals.empty()) throw std::invalid_argument("observability needs at least one normal");
+    // A = mean of n n^T = [[a, b], [b, c]].
+    double a = 0, b = 0, c = 0;
+    for (const auto& n : unit_normals) {
+        if (!std::isfinite(n.x) || !std::isfinite(n.y) || std::abs(std::hypot(n.x, n.y) - 1) > 1e-6)
+            throw std::invalid_argument("observability needs finite unit normals");
+        a += n.x * n.x;
+        b += n.x * n.y;
+        c += n.y * n.y;
+    }
+    const double count = static_cast<double>(unit_normals.size());
+    a /= count; b /= count; c /= count;
+    // Eigenvalues of a symmetric 2x2: mean +/- half-gap.
+    const double mean = 0.5 * (a + c);
+    const double half_gap = std::hypot(0.5 * (a - c), b);
+    TranslationObservability result;
+    result.strong = mean + half_gap;
+    result.weak = std::max(0.0, mean - half_gap);
+    // Eigenvector for weak: (A - weak I) v = 0. Each row gives a candidate
+    // perpendicular to it; take the longer one for numerical safety.
+    const Point2D from_row1{b, result.weak - a};
+    const Point2D from_row2{result.weak - c, b};
+    const Point2D v = std::hypot(from_row1.x, from_row1.y) >= std::hypot(from_row2.x, from_row2.y)
+                          ? from_row1 : from_row2;
+    const double length = std::hypot(v.x, v.y);
+    if (length > 1e-12) result.weak_direction = {v.x / length, v.y / length};
+    else result.weak_direction = {1, 0};  // A = I/2: every direction equally strong
+    return result;
+}
 }  // namespace atlas

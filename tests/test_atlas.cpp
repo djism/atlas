@@ -1,5 +1,8 @@
 #include "atlas/geometry.hpp"
+#include "atlas/experiment.hpp"
 #include "atlas/icp.hpp"
+#include "atlas/localizer.hpp"
+#include "atlas/mapping.hpp"
 #include "atlas/matching.hpp"
 #include "atlas/planner.hpp"
 #include "atlas/simulation.hpp"
@@ -245,6 +248,7 @@ int main() {
         // No noise, yet point-to-point is not exact: beams hit different wall spots.
         check(errorOf(to_point) > 1e-3, "room point-to-point: millimeter-level error without noise");
         check(to_line.converged(), "room point-to-line converges");
+        check(to_line.observability.weak > 0.2, "full room view: every direction well constrained");
         check(errorOf(to_line) < errorOf(to_point) / 3, "room point-to-line at least 3x more accurate");
         check(errorOf(to_line) < 1e-3, "room point-to-line within 1 mm here");
         check(std::abs(to_line.second_in_first.theta - truth.theta) < 0.001, "room point-to-line rotation");
@@ -302,6 +306,298 @@ int main() {
         const auto hall = alignIcp(h1, h2, {0,0,0}, line_options);
         check(hall.status == IcpStatus::Degenerate, "hallway point-to-line reports Degenerate");
         check(hall.pose_per_pass.empty() && hall.second_in_first.x == 0, "degenerate keeps the guess");
+    }
+    // ---- Occupancy mapping: one beam at a time, 1 m cells ----
+    {
+        LidarConfig one{1, 10.0};  // a single beam, straight ahead
+        OccupancyMap map({0, 0}, 6, 4, 1.0);
+        // Sensor in cell (0,0) facing +x; wall 3 m ahead ends the beam at (3.5, 0.5).
+        map.integrateScan({3.0}, one, {0.5, 0.5, 0});
+        check(map.columns() == 6 && map.rows() == 4, "map size in cells");
+        check(map.state(0, 0) == CellState::Free && map.state(1, 0) == CellState::Free &&
+              map.state(2, 0) == CellState::Free, "beam path cells free");
+        check(map.state(3, 0) == CellState::Occupied, "beam end cell occupied");
+        check(map.state(4, 0) == CellState::Unknown, "cell behind the hit stays unknown");
+        check(map.state(0, 1) == CellState::Unknown, "cell beside the beam stays unknown");
+        near(map.logOdds(3, 0), 0.85, "one hit adds the hit weight");
+        near(map.logOdds(1, 0), -0.4, "one pass adds the miss weight");
+        check(std::abs(map.probability(3, 0) - 0.7) < 0.01, "one hit is about 70% occupied");
+        check(map.stateAt({-1, 0}) == CellState::Unknown && map.logOdds(9, 9) == 0,
+              "outside the map is unknown");
+
+        OccupancyMap clear({0, 0}, 6, 4, 1.0);
+        clear.integrateScan({std::numeric_limits<double>::infinity()}, {1, 2.2}, {0.5, 0.5, 0});
+        check(clear.state(2, 0) == CellState::Free && clear.state(3, 0) == CellState::Unknown,
+              "no return clears up to max range, no further");
+
+        // 30-degree beam ending at (2.92, 1.90): crosses x = 1 first, then y = 1, then x = 2.
+        OccupancyMap slanted({0, 0}, 6, 4, 1.0);
+        std::vector<double> twelve(12, std::numeric_limits<double>::infinity());
+        twelve[1] = 2.8;  // beam 1 of 12 points at 30 degrees
+        slanted.integrateScan(twelve, {12, 0.4}, {0.5, 0.5, 0});  // other beams: 0.4 m, stay in cell
+        OccupancyMap ray({0, 0}, 6, 4, 1.0);
+        std::vector<double> only(12, 0.0);  // zero-length beams touch only the sensor cell
+        only[1] = 2.8;
+        ray.integrateScan(only, {12, 10.0}, {0.5, 0.5, 0});
+        check(ray.state(1, 0) == CellState::Free && ray.state(1, 1) == CellState::Free,
+              "slanted beam visits each crossed cell");
+        check(ray.state(2, 1) == CellState::Occupied, "slanted beam end cell occupied");
+        check(ray.state(0, 1) == CellState::Unknown && ray.state(2, 0) == CellState::Unknown,
+              "slanted beam skips cells it does not cross");
+        check(slanted.state(1, 0) == CellState::Unknown, "no-return beam shorter than a cell stays home");
+
+        for (int k = 0; k < 20; ++k) map.integrateScan({3.0}, one, {0.5, 0.5, 0});
+        near(map.logOdds(3, 0), 4.0, "repeated hits clamp at max log-odds");
+        near(map.logOdds(1, 0), -4.0, "repeated passes clamp at min log-odds");
+
+        rejects([] { OccupancyMap m({0, 0}, 0, 4, 1.0); }, "map zero width");
+        rejects([] { OccupancyMap m({0, 0}, 4, 4, -1); }, "map negative resolution");
+        rejects([] { OccupancyMap m({std::nan(""), 0}, 4, 4, 1); }, "map NaN origin");
+        rejects([] { OccupancyMapOptions o; o.hit = -1; OccupancyMap m({0, 0}, 4, 4, 1, o); },
+                "map hit weight must be positive");
+        rejects([&] { map.integrateScan({3.0, 3.0}, one, {0.5, 0.5, 0}); }, "map range count");
+        rejects([&] { map.integrateScan({-1.0}, one, {0.5, 0.5, 0}); }, "map negative range");
+        rejects([&] { map.integrateScan({std::nan("")}, one, {0.5, 0.5, 0}); }, "map NaN range");
+        rejects([&] { map.integrateScan({3.0}, one, {7, 0.5, 0}); }, "map sensor outside");
+        rejects([&] { map.integrateScan({3.0}, one, {0.5, 0.5, std::nan("")}); }, "map NaN pose");
+    }
+    // ---- Occupancy mapping: a ray-cast room, and a box that is later removed ----
+    {
+        const std::vector<Segment2D> walls{
+            {{0,0},{8,0}}, {{8,0},{8,2}}, {{8,2},{9.5,2}}, {{9.5,2},{9.5,4}}, {{9.5,4},{8,4}},
+            {{8,4},{8,6}}, {{8,6},{0,6}}, {{0,6},{0,0}}};
+        const std::vector<Segment2D> box{{{2,4},{3,4}}, {{3,4},{3,5}}, {{3,5},{2,5}}, {{2,5},{2,4}}};
+        std::vector<Segment2D> with_box = walls;
+        with_box.insert(with_box.end(), box.begin(), box.end());
+        const auto distanceToSegments = [](const Point2D& p, const std::vector<Segment2D>& segs) {
+            double best = std::numeric_limits<double>::infinity();
+            for (const auto& s : segs) {
+                const double ex = s.end.x - s.start.x, ey = s.end.y - s.start.y;
+                const double u = std::clamp(((p.x - s.start.x) * ex + (p.y - s.start.y) * ey) /
+                                            (ex * ex + ey * ey), 0.0, 1.0);
+                best = std::min(best, std::hypot(p.x - s.start.x - u * ex, p.y - s.start.y - u * ey));
+            }
+            return best;
+        };
+        LidarConfig lidar;  // 360 beams, 10 m
+        const double res = 0.05;
+        OccupancyMap map({-0.5, -0.5}, 10.5, 7, res);
+        // Mapping with KNOWN poses: the answer key gives each scan's pose. This is
+        // building a map, not localizing; localization against it is the next step.
+        const std::vector<Pose2D> survey{{1.5,1.5,0}, {4,1.5,0.5}, {6.5,1.5,1}, {8.7,3,2},
+                                         {6.5,4.5,2.5}, {4,3,3}, {1.2,4.8,-1}};
+        for (const auto& pose : survey) map.integrateScan(simulateLidarRanges(with_box, pose, lidar), lidar, pose);
+
+        const auto occupied = map.occupiedCenters();
+        double worst = 0;
+        for (const auto& c : occupied) worst = std::max(worst, distanceToSegments(c, with_box));
+        check(occupied.size() > 400, "room map has occupied cells");
+        check(worst <= res, "every occupied cell is within one cell of a real wall");
+        std::size_t samples = 0, found = 0;
+        for (const auto& s : with_box) {
+            const double len = std::hypot(s.end.x - s.start.x, s.end.y - s.start.y);
+            for (double d = 0.025; d < len; d += 0.05, ++samples) {
+                const Point2D p{s.start.x + (s.end.x - s.start.x) * d / len,
+                                s.start.y + (s.end.y - s.start.y) * d / len};
+                bool near_occupied = false;  // the hit cell may be on either side of the wall line
+                for (long dc = -1; dc <= 1; ++dc)
+                    for (long dr = -1; dr <= 1; ++dr)
+                        near_occupied = near_occupied || map.state(map.columnOf(p.x) + dc, map.rowOf(p.y) + dr) == CellState::Occupied;
+                found += near_occupied;
+            }
+        }
+        check(found >= samples * 95 / 100, "at least 95% of wall length is mapped");
+        check(map.stateAt({5, 1}) == CellState::Free, "open floor is free");
+        check(map.stateAt({2.5, 4.5}) == CellState::Unknown, "inside the box: never seen");
+        check(map.stateAt({-0.3, 3}) == CellState::Unknown, "outside the room: never seen");
+
+        // The world changes: the box is removed. Its front face (x = 3, seen from
+        // (4, 3)) was mapped as occupied; new scans see the wall behind it instead.
+        const Pose2D spot{4, 3, 0};
+        OccupancyMap changing({-0.5, -0.5}, 10.5, 7, res);
+        for (int k = 0; k < 3; ++k) changing.integrateScan(simulateLidarRanges(with_box, spot, lidar), lidar, spot);
+        // A hit exactly on x = 3 falls in the cell that STARTS at 3 (the robot's side).
+        const Point2D face{3.01, 4.5};
+        check(changing.stateAt(face) == CellState::Occupied, "box face mapped while present");
+        int scans_to_clear = 0;
+        while (changing.stateAt(face) != CellState::Free && scans_to_clear < 50) {
+            changing.integrateScan(simulateLidarRanges(walls, spot, lidar), lidar, spot);
+            ++scans_to_clear;
+        }
+        check(changing.stateAt(face) == CellState::Free, "removed box face becomes free");
+        check(scans_to_clear > 1, "one scan does not erase repeated evidence");
+
+        // Mean hit points sit on the walls; cell centers can be half a cell off.
+        const auto hit_points = map.occupiedPoints();
+        // Exception: a corner cell averages hits from two walls, landing between them.
+        double worst_point = 0, mean_center = 0;
+        std::size_t off_wall = 0;
+        for (const auto& p : hit_points) {
+            const double d = distanceToSegments(p, with_box);
+            worst_point = std::max(worst_point, d);
+            off_wall += d > 1e-6;
+        }
+        for (const auto& c : occupied) mean_center += distanceToSegments(c, with_box) / occupied.size();
+        check(hit_points.size() == occupied.size(), "one mean hit point per occupied cell");
+        check(off_wall * 100 < hit_points.size(), "noise-free mean hit points lie on the walls (corners aside)");
+        check(worst_point < res / 2, "corner mean points stay within half a cell");
+        check(mean_center > 0.01, "cell centers are biased off the walls");
+
+        // ---- Scan-to-map localization vs scan-to-scan tracking ----
+        // Three laps of a 1.5 m circle, 10 cm per scan, 3 cm scan noise. The map
+        // (built above from answer-key poses) and the scans are all the localizer
+        // gets, plus the starting pose. The answer key is used only to score it.
+        const auto truthAt = [&](int k) {
+            const double a = k * 0.1 / 1.5;
+            return Pose2D{4.5 + 1.5 * std::cos(a), 2.8 + 1.5 * std::sin(a), a + pi / 2};
+        };
+        const int scans = static_cast<int>(3 * 2 * pi * 1.5 / 0.1);
+        ScanTracker tracker(truthAt(0));
+        MapLocalizer localizer(hit_points, truthAt(0));
+        double tracker_worst = 0, localizer_worst = 0, first_lap_worst = 0, last_lap_worst = 0;
+        int localizer_lost = 0;
+        double min_inliers = 1;
+        for (int k = 0; k <= scans; ++k) {
+            const Pose2D truth = truthAt(k);
+            const auto scan = addGaussianNoise(
+                rangesToPoints(simulateLidarRanges(with_box, truth, lidar), lidar), 0.03, 1000 + k);
+            const auto t = tracker.update(scan).pose_in_world;
+            const auto step = localizer.update(scan);
+            const double e = std::hypot(step.pose_in_map.x - truth.x, step.pose_in_map.y - truth.y);
+            tracker_worst = std::max(tracker_worst, std::hypot(t.x - truth.x, t.y - truth.y));
+            localizer_worst = std::max(localizer_worst, e);
+            if (k < scans / 3) first_lap_worst = std::max(first_lap_worst, e);
+            if (k > 2 * scans / 3) last_lap_worst = std::max(last_lap_worst, e);
+            localizer_lost += step.lost;
+            min_inliers = std::min(min_inliers, step.inlier_fraction);
+        }
+        check(localizer_lost == 0, "map localizer: no lost scans on three laps");
+        check(localizer_worst < 0.02, "map localizer stays within 2 cm (3 cm noise)");
+        check(tracker_worst > 4 * localizer_worst, "scan-to-scan tracker drifts several times farther");
+        check(last_lap_worst < 2 * first_lap_worst, "map localizer error does not grow lap to lap");
+        check(min_inliers > 0.85, "map localizer: most scan points match the map");
+
+        // A wrong starting pose (10 cm, 2 degrees off) is corrected by the first
+        // scan; scan-to-scan tracking would keep that offset forever.
+        MapLocalizer corrected(hit_points, {4.1, 3.05, 2 * pi / 180});
+        const auto first = corrected.update(rangesToPoints(simulateLidarRanges(with_box, spot, lidar), lidar));
+        check(std::hypot(first.pose_in_map.x - 4, first.pose_in_map.y - 3) < 0.005 &&
+              std::abs(first.pose_in_map.theta) < 0.002, "first scan corrects a wrong starting pose");
+
+        // The world changed: a box the map never saw, 1 m ahead. Fewer points
+        // match the map, but enough walls do to keep the pose.
+        auto changed = with_box;
+        changed.insert(changed.end(), {{{5,2.5},{5,3.5}}, {{5,3.5},{5.5,3.5}}, {{5.5,3.5},{5.5,2.5}}, {{5.5,2.5},{5,2.5}}});
+        MapLocalizer seen(hit_points, spot), surprised(hit_points, spot);
+        const auto usual = seen.update(rangesToPoints(simulateLidarRanges(with_box, spot, lidar), lidar));
+        const auto unusual = surprised.update(rangesToPoints(simulateLidarRanges(changed, spot, lidar), lidar));
+        check(std::hypot(unusual.pose_in_map.x - 4, unusual.pose_in_map.y - 3) < 0.005, "unmapped box: pose kept");
+        check(unusual.inlier_fraction < usual.inlier_fraction - 0.1, "unmapped box lowers inlier fraction");
+
+        // Motion sanity check: the robot "jumps" 0.5 m between scans. ICP finds
+        // the new pose, but it is too far from the guess, so the step is rejected.
+        MapLocalizer jumpy(hit_points, spot);
+        jumpy.update(rangesToPoints(simulateLidarRanges(with_box, spot, lidar), lidar));
+        const auto jump = jumpy.update(rangesToPoints(simulateLidarRanges(with_box, {4.5, 3, 0}, lidar), lidar));
+        check(jump.jump_rejected && jump.lost, "0.5 m jump rejected and flagged lost");
+        check(std::hypot(jump.pose_in_map.x - 4, jump.pose_in_map.y - 3) < 0.005, "rejected jump keeps the prediction");
+
+        rejects([&] { MapLocalizer m({{0, 0}, {1, 0}}, spot); }, "localizer map too small");
+        rejects([&] { MapLocalizer m(hit_points, {0, std::nan(""), 0}); }, "localizer NaN pose");
+
+        // ---- Degeneracy: a 3 m sensor sometimes sees only parallel walls ----
+        // Circle of 1.8 m around (4.6, 2.6), 1 cm noise. Near k = 66 the scan holds
+        // only the bottom wall and the box face parallel to it: x is unobservable.
+        const auto aroundAt = [&](int k) {
+            const double a = k * 0.1 / 1.8;
+            return Pose2D{4.6 + 1.8 * std::cos(a), 2.6 + 1.8 * std::sin(a), a + pi / 2};
+        };
+        const LidarConfig short_lidar{360, 3.0};
+        MapLocalizerOptions blind_to_degeneracy;
+        blind_to_degeneracy.min_weak_observability = 0;
+        MapLocalizer handled(hit_points, aroundAt(0)), unhandled(hit_points, aroundAt(0), blind_to_degeneracy);
+        double handled_worst = 0, unhandled_worst = 0, weakest = 1;
+        int weak_steps = 0;
+        for (int k = 0; k <= 100; ++k) {
+            const Pose2D truth = aroundAt(k);
+            const auto scan = addGaussianNoise(
+                rangesToPoints(simulateLidarRanges(with_box, truth, short_lidar), short_lidar), 0.01, 7 + k);
+            const auto h = handled.update(scan);
+            const auto u = unhandled.update(scan);
+            handled_worst = std::max(handled_worst, std::hypot(h.pose_in_map.x - truth.x, h.pose_in_map.y - truth.y));
+            unhandled_worst = std::max(unhandled_worst, std::hypot(u.pose_in_map.x - truth.x, u.pose_in_map.y - truth.y));
+            weak_steps += h.weakly_constrained;
+            if (!h.lost) weakest = std::min(weakest, h.observability.weak);
+        }
+        check(weakest < 0.01, "short range: some scans see only parallel walls");
+        check(weak_steps > 0, "weak scans are flagged");
+        check(unhandled_worst > 1.0, "ignoring degeneracy: slides compound past 1 m");
+        check(handled_worst < 0.05, "keeping the prediction along the weak direction: within 5 cm");
+
+        // One scan of that parallel-wall view, from a guess 10 cm off along the
+        // walls (x) and 5 cm off across them (y). The scan fixes y; it cannot fix x,
+        // so x keeps the guess, even though the guess is wrong there.
+        const Pose2D view = aroundAt(66);
+        MapLocalizer one_view(hit_points, {view.x + 0.10, view.y + 0.05, view.theta});
+        const auto v = one_view.update(addGaussianNoise(
+            rangesToPoints(simulateLidarRanges(with_box, view, short_lidar), short_lidar), 0.01, 73));
+        check(v.weakly_constrained && std::abs(v.observability.weak_direction.x) > 0.99,
+              "parallel-wall view: weak direction is x");
+        check(std::abs(v.pose_in_map.y - view.y) < 0.005, "across the walls: scan corrects y");
+        const Point2D& w = v.observability.weak_direction;  // nearly, not exactly, x
+        check(std::abs((v.pose_in_map.x - (view.x + 0.10)) * w.x + (v.pose_in_map.y - (view.y + 0.05)) * w.y) < 1e-9,
+              "along the weak direction: no change from the guess");
+        check(std::abs(v.pose_in_map.x - (view.x + 0.10)) < 0.002, "so the 10 cm error along the walls remains");
+    }
+    // ---- Scripted experiment harness ----
+    {
+        const auto circle = circlePath({0, 0}, 1, 0.1, 1);
+        check(circle.size() == 63, "circle path: one pose per 10 cm, both ends included");
+        near(circle[0].x, 1, "circle path starts at angle 0");
+        near(circle[0].theta, pi / 2, "circle path heading along travel");
+        rejects([] { circlePath({0, 0}, 0, 0.1, 1); }, "circle path zero radius");
+
+        ExperimentConfig config;
+        config.walls = {{{0,0},{6,0}}, {{6,0},{6,4}}, {{6,4},{0,4}}, {{0,4},{0,0}}, {{1,1},{1.5,1}}};
+        config.survey = {{3, 2, 0}, {1, 3, 1}};
+        config.trajectory = circlePath({3, 2}, 1, 0.1, 0.5);
+        config.noise = 0.0;
+        const auto report = runExperiment(config);
+        check(report.scans == config.trajectory.size(), "experiment: one result per pose");
+        check(report.tracker_errors.size() == report.scans && report.localizer_errors.size() == report.scans,
+              "experiment: per-scan errors recorded");
+        check(std::abs(report.driven - 0.1 * (report.scans - 1)) < 0.01, "experiment: distance driven");
+        check(report.map_points > 100 && report.sparse_scans == 0, "experiment: map built, scans not sparse");
+        check(report.localizer.lost == 0 && report.localizer.worst_error < 0.01,
+              "experiment: noise-free localizer within 1 cm");
+        check(std::abs(report.localizer.final_error - report.localizer_errors.back()) < 1e-12,
+              "experiment: final error is the last scan's");
+        ExperimentConfig empty = config;
+        empty.trajectory.clear();
+        rejects([&] { runExperiment(empty); }, "experiment without trajectory");
+    }
+    // ---- Translation observability of line constraints ----
+    {
+        const auto all_up = translationObservability({{0, 1}, {0, -1}, {0, 1}});
+        near(all_up.weak, 0, "parallel normals: weak 0");
+        near(all_up.strong, 1, "parallel normals: strong 1");
+        near(std::abs(all_up.weak_direction.x), 1, "parallel normals: weak direction along the walls");
+        const auto corner = translationObservability({{0, 1}, {1, 0}});
+        near(corner.weak, 0.5, "corner: weak 0.5");
+        near(corner.strong, 0.5, "corner: strong 0.5");
+        std::vector<Point2D> mostly_up(9, {0, 1});
+        mostly_up.push_back({1, 0});
+        const auto ninety_ten = translationObservability(mostly_up);
+        near(ninety_ten.weak, 0.1, "90/10 normals: weak 0.1");
+        near(std::abs(ninety_ten.weak_direction.x), 1, "90/10 normals: weak along x");
+        const double h = std::sqrt(0.5);
+        const auto diagonal = translationObservability({{h, h}, {-h, -h}});
+        near(diagonal.weak, 0, "diagonal walls: weak 0");
+        near(std::abs(diagonal.weak_direction.x * h + diagonal.weak_direction.y * h), 0,
+             "diagonal walls: weak direction perpendicular to normals");
+        near(std::hypot(diagonal.weak_direction.x, diagonal.weak_direction.y), 1, "weak direction is unit");
+        rejects([] { translationObservability({}); }, "observability empty");
+        rejects([] { translationObservability({{0, 2}}); }, "observability non-unit normal");
     }
     // ---- Grid planning (A*) ----
     {
