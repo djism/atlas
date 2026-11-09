@@ -40,6 +40,17 @@
 - Added `web/`: React + TypeScript + Vite site with a live Three.js home, a
   draggable ICP figure, and a three-experiment lab, all calling the C++ engine
   in a Web Worker. Documented in `docs/sandbox.md`.
+- Added `OccupancyMap`: log-odds occupancy grid built from LiDAR scans at known
+  poses, with exact beam traversal, clamping, and mean hit points per cell
+  (`occupiedPoints()`). Demo prints a text map. Documented in `docs/mapping.md`.
+- Added `MapLocalizer`: scan-to-map localization with a constant-velocity guess,
+  inlier fraction, and a motion sanity check that rejects jumps.
+- Added `translationObservability()` and `IcpResult::observability`; the
+  localizer keeps its prediction along a direction the scan cannot constrain.
+- Added an `alignIcp` overload that reuses precomputed first-scan normals.
+- Added `runExperiment()`, `circlePath()`, and the `atlas_experiment` CLI:
+  tracker vs localizer over paths, ranges, noise levels, and seeds, with
+  failure flags and optional CSV. Documented in `docs/localization.md`.
 
 ## 0.1.0 — 2026-11-04
 

@@ -241,6 +241,63 @@ deployed. Mouse dragging in the hero was not tested by the automated tour.
 Occupancy-grid map and scan-to-map localization: match each scan against a map
 of the house, not only the previous scan, so drift is corrected.
 
+## 2026-11-09 — occupancy map, scan-to-map localization, degeneracy, experiment (Phase 1 done)
+
+### Implemented
+
+- `OccupancyMap` (mapping.hpp/cpp): log-odds grid, exact beam traversal
+  (Amanatides and Woo), clamping, three states, mean hit point per cell.
+  See [mapping](mapping.md).
+- `MapLocalizer` (localizer.hpp/cpp): registers each scan against map points,
+  so the result is the pose in the map and errors do not chain. Jump check
+  rejects answers more than 15 cm or 0.2 rad from the guess.
+- `translationObservability()`: eigenvalues of mean(n n^T) over matched
+  normals. When the weak one is below 0.05, the localizer keeps its prediction
+  along the weak direction. ICP reports it; map normals are fitted once.
+- `runExperiment()`, `circlePath()`, and `atlas_experiment`: scripted runs
+  over paths, ranges, noise, and seeds with failure flags and CSV.
+  See [localization](localization.md).
+
+### Lesson
+
+The map fixes drift only where the scan has information. With a 10 m sensor
+the localizer never failed (worst 3 to 11 mm vs the tracker's 2 to 19 cm). In
+a view of parallel walls ICP slid 25 cm and still reported Converged, and the
+constant-velocity guess turned that slide into a runaway. Detecting the weak
+direction stops the slide, but along it only the prediction is left, and that
+drifts. One seed proves little: a 3.4 cm result was the best of 20 seeds;
+3 of 20 failed by more than 1 m.
+
+### Validation
+
+Apple Clang, C++17, `-Werror`: all tests, demo, and experiment build and pass;
+WASM engine and web build pass. Tests: single beams on 1 m cells, a room map
+(occupied cells within 5 cm of walls, at least 95% wall coverage), a removed
+box clearing, three laps with 3 cm noise (localizer within 2 cm, no growth),
+a wrong start corrected, an unmapped box lowering inliers, a rejected jump,
+observability on hand-checkable normals, the short-range path with and
+without degeneracy handling, and the experiment harness. Mutation checks
+caught: no-return end marked as hit, missing clamp, traversal that never steps
+in y, disabled jump check, cell centers as map points, flipped projection
+sign, strong eigenvector as weak, and ignoring the scan in weak steps. Not
+caught: dropping the constant-velocity guess (not needed at 10 cm per scan).
+
+Mistakes caught: a test probed the wrong side of a cell border; cell centers
+biased the map by about 2 cm (fixed with mean hit points); my test path drove
+through the box; the experiment first surveyed the map with the run's 3 m sensor.
+
+### Limitations
+
+Pose tracking only (needs the initial pose; no relocalization beyond the
+0.3 m gate). Short range fails. Rotation observability is not analyzed. The
+map is built at answer-key poses with no noise. Threshold 0.05 chosen on two
+runs. Unoptimized test suite takes about 15 s.
+
+### Next smallest step
+
+Show the measured result in the sandbox: add the map localizer to the "Get it
+lost" tab beside the tracker, then plan from the estimated pose (Phase 2).
+
 ### Daily checkpoint template
 
 - Concept understood:

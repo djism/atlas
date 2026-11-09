@@ -3,9 +3,10 @@
 **Learning vehicle motion estimation and SLAM through a C++ implementation.**
 
 Latest release: **v0.1.0 — 2D geometry and motion recovery with known correspondences.**
-In progress (unreleased): least-squares alignment, point-to-point and point-to-line
-2D ICP, seeded noise, a distance gate, ray-cast LiDAR, scan tracking, a simplified
-planner, and a live browser sandbox running the C++ engine via WebAssembly (roadmap Phase 1).
+In progress (unreleased, roadmap Phase 1 complete): least-squares alignment, point-to-point
+and point-to-line 2D ICP, ray-cast LiDAR, scan tracking, an occupancy-grid map, scan-to-map
+localization with degeneracy handling, a scripted experiment, a simplified planner, and a live
+browser sandbox running the C++ engine via WebAssembly.
 
 Given two observations of stationary landmarks, Atlas estimates the translation
 and rotation that express the second observation in the first sensor's frame.
@@ -14,7 +15,7 @@ a ten-degree left turn.
 
 This is an educational foundation. It is not a complete SLAM system, any company's
 stack, or vehicle-ready software. Real-data odometry, robust matching, 3D mapping,
-loop closure, map-based localization, and distributed evaluation are planned work,
+loop closure, and distributed evaluation are planned work,
 not implemented features.
 
 ## Build and run
@@ -32,10 +33,12 @@ ctest --test-dir build --output-on-failure
 If CMake is not installed, the same code can be compiled directly on macOS/Linux:
 
 ```bash
-c++ -std=c++17 -Wall -Wextra -Wpedantic -Iinclude src/geometry.cpp src/simulation.cpp src/matching.cpp src/icp.cpp src/tracker.cpp src/planner.cpp apps/demo.cpp -o atlas_demo
+c++ -std=c++17 -Wall -Wextra -Wpedantic -Iinclude src/geometry.cpp src/simulation.cpp src/matching.cpp src/icp.cpp src/tracker.cpp src/planner.cpp src/mapping.cpp src/localizer.cpp src/experiment.cpp apps/demo.cpp -o atlas_demo
 ./atlas_demo
-c++ -std=c++17 -Wall -Wextra -Wpedantic -Iinclude src/geometry.cpp src/simulation.cpp src/matching.cpp src/icp.cpp src/tracker.cpp src/planner.cpp tests/test_atlas.cpp -o atlas_tests
+c++ -std=c++17 -Wall -Wextra -Wpedantic -Iinclude src/geometry.cpp src/simulation.cpp src/matching.cpp src/icp.cpp src/tracker.cpp src/planner.cpp src/mapping.cpp src/localizer.cpp src/experiment.cpp tests/test_atlas.cpp -o atlas_tests
 ./atlas_tests
+c++ -O2 -std=c++17 -Iinclude src/*.cpp apps/experiment.cpp -o atlas_experiment
+./atlas_experiment --seeds 5   # about 30 s; add --csv results/runs.csv for per-run rows
 ```
 
 Expected demo values (rounding and negative zero may vary):
@@ -86,8 +89,18 @@ occlude what is behind them ([lidar](docs/lidar.md)). On such scans, point-to-li
 ICP (`IcpMethod::PointToLine`) matches points to local wall lines and is several
 times more accurate than point-to-point; it reports `Degenerate` in a featureless
 hallway. `ScanTracker` chains scan-to-scan estimates; its drift is never corrected
-yet. A simplified A* planner (`planPath()`) plans on an inflated grid from the true
-pose, separately from localization.
+without a map. A simplified A* planner (`planPath()`) plans on an inflated grid from the
+true pose, separately from localization.
+
+`OccupancyMap` builds a probabilistic grid map from scans at known poses (log-odds;
+free, occupied, unknown) ([mapping](docs/mapping.md)). `MapLocalizer` registers each scan
+against that map, so errors no longer chain from scan to scan. When the visible walls
+leave one direction unconstrained (parallel walls), `translationObservability()` detects
+it and the localizer keeps its prediction along that direction. `atlas_experiment` runs
+scripted routes for several seeds and reports drift and failure flags
+([localization](docs/localization.md)). Measured: with a 10 m sensor the localizer never
+failed and was 10 to 20 times more accurate than the tracker; with a 3 m sensor both
+failed in every seed.
 
 ## Browser sandbox
 
@@ -101,12 +114,15 @@ Web Worker. The world is simulated. See [sandbox](docs/sandbox.md) to build and 
 | --- | --- |
 | `include/atlas/` | Public types and function declarations |
 | `src/` | Geometry, LiDAR simulation and noise, matching, ICP, tracking, and planning |
-| `apps/demo.cpp` | Reproducible known-pair and ICP experiments |
+| `apps/demo.cpp` | Reproducible known-pair, ICP, and mapping examples |
+| `apps/experiment.cpp` | Scripted tracker-vs-localizer experiment with failure flags |
 | `tests/test_atlas.cpp` | Numerical and invalid-input checks |
 | `docs/frames.md` | Coordinate conventions and an explanation of the experiment |
 | `docs/alignment.md` | Multi-point alignment derivation, degeneracy, and limits |
 | `docs/icp.md` | ICP loop, point-to-line ICP, convergence example, and failure cases |
 | `docs/lidar.md` | Ray-cast LiDAR model and first point-to-point findings |
+| `docs/mapping.md` | Occupancy grid mapping: log-odds, beam traversal, findings |
+| `docs/localization.md` | Scan-to-map localization, degeneracy handling, experiment results |
 | `docs/sandbox.md` | Browser sandbox: build, architecture, measurements, limits |
 | `wasm/` | Emscripten bindings and build script for the browser engine |
 | `web/` | React + TypeScript + Vite site (Three.js rendering, engine in a Web Worker) |
@@ -136,7 +152,8 @@ range boundaries, nearest neighbors, centroids, two-pair and multi-point relativ
 motion, angle wrapping, a fixed noisy least-squares example, noise statistics,
 ICP convergence and failure cases, partial overlap, distance gating, ambiguity
 detection, ray-cast hits and occlusion, normals, point-to-line ICP, tracking,
-hallway degeneracy, planning, and invalid inputs.
+hallway degeneracy, planning, occupancy mapping, scan-to-map localization,
+translation observability, the experiment harness, and invalid inputs.
 CI is configured for Linux/macOS; a successful local run does not imply remote CI has run.
 
 ## Versioning and daily workflow
@@ -163,9 +180,10 @@ commits or schedule unattended pushes.
 - [x] Nearest-point search and motion recovery from two known pairs
 - [x] Centroids and rigid alignment using many known pairs
 - [x] Iterative correspondence search and basic 2D ICP (noise-free examples)
-- [ ] **Phase 1:** robust 2D localization — done: noise, partial overlap, gates,
-      ambiguity check, ray-cast LiDAR, point-to-line ICP, scan tracking;
-      remaining: occupancy-grid map and scan-to-map localization
+- [x] **Phase 1:** robust 2D localization — noise, partial overlap, gates, ambiguity
+      check, ray-cast LiDAR, point-to-line ICP, scan tracking, occupancy-grid map,
+      scan-to-map localization, degeneracy handling, scripted experiment
+      (known failure: short sensor range)
 - [ ] **Phase 2:** interactive sandbox v1 — started: engine in the browser
       (WebAssembly), home-robot scenario with a live 3D lab; remaining: map-based
       localization in the lab, URL state, deployment, browser tests in CI

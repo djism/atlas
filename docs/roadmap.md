@@ -55,7 +55,7 @@ Scenario = **map** (walls, objects as polygons) + **robot model** (footprint, sp
 Frames and transforms, ideal scans, known-pair least-squares alignment, nearest-
 neighbor pairing, basic point-to-point 2D ICP with convergence and failure examples.
 
-### Phase 1 — Robust 2D localization (target: weeks 1–2)
+### Phase 1 — Robust 2D localization (done 2026-11-09)
 
 Goal: a 2D engine good enough to power the sandbox honestly.
 
@@ -69,6 +69,10 @@ Goal: a 2D engine good enough to power the sandbox honestly.
 
 Done when: tests cover each piece, including failure cases; a CLI run over a
 scripted trajectory reports drift and failure flags; docs explain each concept.
+
+Outcome: `atlas_experiment` shows the map localizer never failing with a 10 m
+sensor (3 to 11 mm worst error vs 2 to 19 cm for the tracker), and both methods
+failing with a 3 m sensor. Planning from the estimated pose moves to Phase 2.
 
 ### Phase 2 — Interactive sandbox v1 (target: weeks 2–3)
 
