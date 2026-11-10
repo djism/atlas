@@ -19,7 +19,7 @@ npm run dev          # http://localhost:5173
 npm run build        # typecheck + production bundle in web/dist/
 ```
 
-Built with Emscripten 6.0.13; the engine is a single ~116 KB module.
+Built with Emscripten 6.0.13; the engine is a single ~132 KB module.
 Rendering uses Three.js 0.169.0 (project-local npm dependency, exact version).
 
 ## The page
@@ -30,7 +30,7 @@ Rendering uses Three.js 0.169.0 (project-local npm dependency, exact version).
 | What I built | Reads six modules, each with its source file and one measured number | none |
 | How it works | Drags a blue scan in a 2D figure, releases, and watches ICP pull it back pass by pass; switches point-to-line / point-to-point | `alignScans` |
 | Lab: Match two scans | The same ICP experiment on the 3D field, with pair lines | `alignScans` |
-| Lab: Get it lost | Shortens sensor range or adds noise; watches the tracker's estimate (blue ring) drift from the true robot | `simulateScan`, `Tracker.update` |
+| Lab: Get it lost | Compares two estimators on the same scans: the map localizer (blue ring) and the no-map tracker (gray ring). Shortens range, adds noise, or moves furniture and drops boxes so the house no longer matches the map (pale dots) | `buildMap`, `simulateScan`, `Localizer.update`, `Tracker.update` |
 | Lab: Rearrange the house | Drags furniture, drops boxes, blocks the doorway; watches replanning | `planRoute` |
 
 Visual direction ("Monochrome"): white page, ink type, one signal blue
@@ -45,6 +45,8 @@ Main thread (React + Three.js)               Web Worker (C++ via WASM)
   answer key (true pose)                      Tracker.update point-to-line ICP, chaining
   IcpDemo: drag, replay, verdicts     <---    alignScans     ICP from a guess; poses, RMSE, pairs per pass
   panels and readouts                         planRoute      inflated 5 cm grid + A* + smoothing
+                                              buildMap       occupancy map from survey scans
+                                              Localizer.update scan-to-map, degeneracy handling
 ```
 
 - **Honest labels.** The page says it is live and the world is simulated. The
@@ -59,6 +61,20 @@ Main thread (React + Three.js)               Web Worker (C++ via WASM)
   plus the pose after each pass, nearest-pair RMSE per pass, and the nearest
   pairs at each step so the page can draw them. Tolerances: 1e-4 m and 1e-4 rad,
   at most 40 passes (tighter tolerances let 8 mm noise keep ICP busy to the limit).
+- **Map (surveyed).** On entering "Get it lost" or pressing "Re-map and
+  restart", the worker builds an occupancy map (5 cm) from one noise-free scan
+  at each patrol point, using the house as it is at that moment and a 20 m
+  survey sensor. These are answer-key poses: a mapping drive before the
+  experiment. Moving furniture afterwards makes the house differ from the map;
+  the old outline stays in the drawn map points.
+- **Sensor on the simulated clock.** The robot's motion is integrated in
+  0.02 s slices, and the true pose is captured every 0.1 s of simulated time
+  for one scan. If the engine is more than two scans behind, simulated time
+  waits. A slow machine makes the robot slower, never the sensor. (First
+  version: a new scan only when the previous one finished, so a busy browser
+  lowered the sensor rate below 2 Hz, and the localizer ran away at the
+  doorway spin. Four 5-minute runs, including one with the CPU slowed 3x,
+  now finish with 0 lost scans.)
 - **Planner (simplified).** Plans from the robot's **true** position on the
   **known** floor plan, so it does not depend on localization. Real robots plan
   from their estimate; closing that loop is roadmap work.
@@ -84,6 +100,17 @@ Main thread (React + Three.js)               Web Worker (C++ via WASM)
 | ICP figure, point-to-point | 20 passes for the same scans |
 | Range 1.5 m | 20 to 68 lost scans; error 47 cm, and in one run 28 m |
 | Planner | ~0.4 ms per plan on the 5 cm grid |
+| Get it lost, default sensor, 20 s | With map 1.1 mm, no map 2.2 mm, map match 93%; 1,085 map points |
+| Get it lost, 6 unmapped boxes dropped | With map 0.3 mm (chip: "House differs from the map", 79% match); no map 3.9 cm |
+| Get it lost, 3 m range, re-mapped, 25 s | With map 1.4 mm, no map 8.3 cm |
+| Engine time per scan, both estimators | median 21 ms, 90th percentile 26 ms (was 4.8 ms with the tracker only) |
+
+These are single live runs, not seed sweeps (the doorway runaway and its fix
+are described in [localization](localization.md)); `atlas_experiment` is the
+measured comparison. In the first version, dropping boxes made the robot
+replan and start turning at 0.32 rad per scan; the localizer's 0.2 rad jump
+limit rejected the correct answers and it ended 1.1 m off. The limit is now
+0.5 rad, with a regression test.
 
 The 28 m case is a real failure mode. When matches fail, the tracker predicts
 with constant velocity; after bad matches that velocity can be wrong, and the
@@ -92,7 +119,10 @@ against a map are the fixes.
 
 ## Limits
 
-- Scan-to-scan odometry only: no map, so drift is never corrected.
+- The map is surveyed at answer-key poses and never updated while localizing.
+- Localization uses brute-force nearest neighbors over all map points; that
+  is most of the 21 ms per scan. A spatial index is the known fix.
+- The jump limits assume how fast motion can change between scans.
 - Planner is simplified (true position, known floor plan); no dynamic obstacles.
 - One scenario (home). Street-car and warehouse scenarios are planned.
 - Not yet deployed; no browser tests in CI (CI builds and tests the C++ only).

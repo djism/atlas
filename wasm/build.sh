@@ -20,7 +20,8 @@ em++ -std=c++17 -O2 -Wall -Wextra -Wpedantic -Werror \
     -fwasm-exceptions \
     -I"$ROOT/include" \
     "$ROOT/src/geometry.cpp" "$ROOT/src/simulation.cpp" "$ROOT/src/matching.cpp" \
-    "$ROOT/src/icp.cpp" "$ROOT/src/tracker.cpp" "$ROOT/src/planner.cpp" "$ROOT/wasm/bindings.cpp" \
+    "$ROOT/src/icp.cpp" "$ROOT/src/tracker.cpp" "$ROOT/src/planner.cpp" \
+    "$ROOT/src/mapping.cpp" "$ROOT/src/localizer.cpp" "$ROOT/wasm/bindings.cpp" \
     -lembind \
     -sMODULARIZE=1 -sEXPORT_ES6=1 -sEXPORT_NAME=createAtlasEngine \
     -sENVIRONMENT=web,worker -sSINGLE_FILE=1 -sALLOW_MEMORY_GROWTH=1 \

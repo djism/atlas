@@ -2,10 +2,10 @@
 const MODULES = [
   { file: "src/simulation.cpp", title: "Ray-cast LiDAR", text: "360 beams hit walls and furniture. The nearest hit wins, so objects can hide behind each other.", num: "Seeded noise, same on every platform" },
   { file: "src/icp.cpp", title: "Scan matching", text: "ICP in two flavors. Matching points to wall lines instead of single points converges far faster.", num: "0.7 mm in 5 passes vs 3.3 mm in 17" },
-  { file: "src/icp.cpp", title: "Ambiguity check", text: "Restarts matching from nearby guesses to catch hallways and repeating poles where many answers look right.", num: "Flags a rival at 18 of 20 inliers" },
-  { file: "src/tracker.cpp", title: "Scan tracker", text: "Chains scan-to-scan matches into a path, and reports when a scan can't be registered.", num: "Under 10 cm drift over 120 steps" },
+  { file: "src/mapping.cpp", title: "Occupancy map", text: "Each beam marks the floor it crossed as free and the spot it hit as occupied. Evidence adds up, and a removed box clears after a few clear scans.", num: "Every occupied cell within 5 cm of a wall" },
+  { file: "src/localizer.cpp", title: "Map localizer", text: "Matches each scan against the map, so errors stop piling up. Spots when parallel walls can't pin the position down.", num: "3 to 11 mm worst vs 2 to 19 cm without a map" },
   { file: "src/planner.cpp", title: "Path planner", text: "A* on an inflated occupancy grid, then smoothing. Kept separate from localization and labeled that way.", num: "About 0.3 ms per plan" },
-  { file: "wasm/bindings.cpp", title: "WebAssembly build", text: "The same C++ compiled for the browser, running in a background worker so the page stays smooth.", num: "116 KB, about 4.8 ms per scan" },
+  { file: "wasm/bindings.cpp", title: "WebAssembly build", text: "The same C++ compiled for the browser, running in a background worker so the page stays smooth.", num: "132 KB; about 21 ms per scan, both estimators" },
 ];
 
 export function Modules() {

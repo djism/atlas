@@ -1,5 +1,5 @@
 import type { Pose } from "../types";
-import type { AlignResult, FromEngine, PlanResult, Reply, StepResult, ToEngine } from "./protocol";
+import type { AlignResult, FromEngine, PlanResult, Reply, ResetDone, StepResult, ToEngine } from "./protocol";
 
 type Request<T extends ToEngine["type"]> = Omit<Extract<ToEngine, { type: T }>, "type" | "id">;
 
@@ -11,7 +11,7 @@ export class EngineClient {
   private readonly worker: Worker;
   private nextId = 1;
   private readonly pending = new Map<number, { resolve: (r: Reply) => void; reject: (e: Error) => void }>();
-  private readonly resetWaiters: (() => void)[] = [];
+  private readonly resetWaiters: ((done: ResetDone) => void)[] = [];
   private readonly errorListeners = new Set<(message: string) => void>();
   readonly ready: Promise<void>;
   failed: string | null = null;
@@ -23,7 +23,7 @@ export class EngineClient {
     this.worker.onmessage = (event: MessageEvent<FromEngine>) => {
       const msg = event.data;
       if (msg.type === "ready") markReady();
-      else if (msg.type === "reset-done") this.resetWaiters.shift()?.();
+      else if (msg.type === "reset-done") this.resetWaiters.shift()?.(msg);
       else if (msg.type === "error") {
         if (msg.id !== undefined && this.pending.has(msg.id)) {
           this.pending.get(msg.id)!.reject(new Error(msg.message));
@@ -43,9 +43,10 @@ export class EngineClient {
     return () => this.errorListeners.delete(listener);
   }
 
-  reset(pose: Pose): Promise<void> {
-    const done = new Promise<void>((resolve) => this.resetWaiters.push(resolve));
-    this.worker.postMessage({ type: "reset", pose } satisfies ToEngine);
+  // Surveys the map from `walls` and restarts the tracker and the map localizer at `pose`.
+  reset(pose: Pose, walls: Float64Array, survey: Pose[]): Promise<ResetDone> {
+    const done = new Promise<ResetDone>((resolve) => this.resetWaiters.push(resolve));
+    this.worker.postMessage({ type: "reset", pose, walls, survey } satisfies ToEngine);
     return done;
   }
 

@@ -21,11 +21,17 @@ export interface FieldStats {
   lastPlanMs: number;
   expanded: number;
   pose: Pose; // true pose (answer key)
-  lost: boolean;
+  lost: boolean; // tracker (no map): last scan failed
   lostScans: number;
-  error: number | null; // estimate vs answer key, meters (lost mode)
-  driven: number; // meters since the tracker started
-  scanMs: number; // engine time for the last scan (+ tracking)
+  error: number | null; // tracker estimate vs answer key, meters (lost mode)
+  mapError: number | null; // map localizer estimate vs answer key, meters
+  mapLost: boolean;
+  mapLostScans: number;
+  mapWeak: boolean; // walls left one direction unconstrained on the last scan
+  inliers: number | null; // share of the last scan matching the map, 0..1
+  mapPoints: number;
+  driven: number; // meters since the estimators started
+  scanMs: number; // engine time for the last scan (+ both estimators)
 }
 
 export interface FieldOptions {
@@ -38,7 +44,9 @@ export interface FieldOptions {
 
 const BEAMS = 360;
 const GLOW = 24; // scans kept as fading afterglow
-const SCAN_MS = 100; // 10 Hz, like a real 2D LiDAR
+const SCAN_PERIOD = 0.1; // seconds of SIMULATED time between scans: 10 Hz, like a real 2D LiDAR
+const MAX_QUEUED_SCANS = 2; // if the engine falls further behind, the simulated world waits
+const SIM_STEP = 0.02; // seconds: robot motion is integrated in slices this small
 const SPEED = 0.6; // m/s
 const TURN_RATE = 3.2; // rad/s
 const BOX = 0.5;
@@ -78,7 +86,10 @@ export class Field {
   noise = 0.01;
   private engineState: FieldStats["engine"] = "loading";
   private scanInFlight = false;
-  private scanAt = 0;
+  // The sensor runs on the simulated clock, not on how fast the page is: every
+  // SCAN_PERIOD of simulated motion, the true pose is captured for one scan.
+  private nextScanIn = 0;
+  private readonly scanQueue: Pose[] = [];
   private seed = 1;
   private generation = 0;
   private needsTrackerReset = false;
@@ -88,6 +99,14 @@ export class Field {
   private lost = false;
   private lostScans = 0;
   private error: number | null = null;
+  private mapEstimate: Pose | null = null;
+  private shownMap: Pose | null = null;
+  private mapLost = false;
+  private mapLostScans = 0;
+  private mapWeak = false;
+  private inliers: number | null = null;
+  private mapError: number | null = null;
+  private mapCount = 0;
   private driven = 0;
   private scanMs = 0;
   private glowSlot = 0;
@@ -101,16 +120,20 @@ export class Field {
   private readonly furnMeshes = new Map<string, THREE.Group>();
   private readonly pickables: THREE.Mesh[] = [];
   private readonly robotMesh = new THREE.Group();
-  private readonly ghost = new THREE.Group();
+  private readonly ghost = new THREE.Group(); // no-map tracker estimate (gray)
+  private readonly mapGhost = new THREE.Group(); // map localizer estimate (blue)
+  private mapCloud: DotCloud | null = null;
   private readonly fanGeo = new THREE.BufferGeometry();
   private readonly fan: THREE.Mesh;
   private readonly glowAge = new Float32Array(GLOW).fill(GLOW);
   private readonly glow = DotCloud.round(BEAMS * GLOW, 0.028, color.signal);
   private readonly trueTrail: THREE.Line;
   private readonly estTrail: THREE.Line;
+  private readonly mapTrail: THREE.Line;
   private readonly pathLine: THREE.Line;
   private readonly trailPts: Point[] = [];
   private estPts: Point[] = [];
+  private mapPts: Point[] = [];
   private readonly goalRing: THREE.Mesh;
   private readonly patrolDots: THREE.Mesh[] = [];
   private readonly icpGroup = new THREE.Group();
@@ -178,14 +201,18 @@ export class Field {
     this.robotMesh.add(body, top, turret, nose);
     this.scene.add(this.robotMesh);
 
-    // estimate ghost: where the tracker believes the robot is
-    const ring = new THREE.Mesh(new THREE.RingGeometry(0.17, 0.205, 48), new THREE.MeshBasicMaterial({ color: color.signal, side: THREE.DoubleSide }));
-    ring.rotation.x = -Math.PI / 2;
-    ring.position.y = 0.012;
-    const heading = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.004, 0.035), new THREE.MeshBasicMaterial({ color: color.signal }));
-    heading.position.set(0.11, 0.012, 0);
-    this.ghost.add(ring, heading);
-    this.scene.add(this.ghost);
+    // estimate ghosts: where each estimator believes the robot is
+    const makeGhost = (g: THREE.Group, c: number, h: number) => {
+      const ring = new THREE.Mesh(new THREE.RingGeometry(0.17, 0.205, 48), new THREE.MeshBasicMaterial({ color: c, side: THREE.DoubleSide }));
+      ring.rotation.x = -Math.PI / 2;
+      ring.position.y = h;
+      const heading = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.004, 0.035), new THREE.MeshBasicMaterial({ color: c }));
+      heading.position.set(0.11, h, 0);
+      g.add(ring, heading);
+      this.scene.add(g);
+    };
+    makeGhost(this.ghost, color.baseline, 0.012);
+    makeGhost(this.mapGhost, color.signal, 0.014); // drawn above the gray one where they overlap
 
     // lidar: visible-area fan plus returns with a fading afterglow
     this.fanGeo.setAttribute("position", new THREE.BufferAttribute(new Float32Array(BEAMS * 9), 3));
@@ -196,7 +223,8 @@ export class Field {
     this.scene.add(this.glow.mesh);
 
     this.trueTrail = this.makeLine(color.ink, false, 0.35);
-    this.estTrail = this.makeLine(color.signal, true, 0.95);
+    this.estTrail = this.makeLine(color.baseline, true, 0.9);
+    this.mapTrail = this.makeLine(color.signal, true, 0.95);
     this.pathLine = this.makeLine(color.ink, true, 0.8);
     this.goalRing = new THREE.Mesh(new THREE.RingGeometry(0.13, 0.17, 40), new THREE.MeshBasicMaterial({ color: color.signal, side: THREE.DoubleSide }));
     this.goalRing.rotation.x = -Math.PI / 2;
@@ -292,15 +320,19 @@ export class Field {
 
   restartTracker(): void {
     this.generation++;
+    this.scanQueue.length = 0;
     this.needsTrackerReset = true;
     this.trackerRunning = false;
     this.estimate = this.shownEstimate = null;
+    this.mapEstimate = this.shownMap = null;
     this.estPts = [];
+    this.mapPts = [];
     this.setLine(this.estTrail, this.estPts);
-    this.lostScans = 0;
+    this.setLine(this.mapTrail, this.mapPts);
+    this.lostScans = this.mapLostScans = 0;
     this.driven = 0;
-    this.error = null;
-    this.lost = false;
+    this.error = this.mapError = this.inliers = null;
+    this.lost = this.mapLost = this.mapWeak = false;
   }
 
   dropRandomBox(): void {
@@ -445,13 +477,17 @@ export class Field {
     const planning = m === "plan" || m === "hero";
     for (const o of [this.robotMesh, this.fan, this.glow.mesh, this.trueTrail]) o.visible = !match;
     this.icpGroup.visible = match;
-    this.ghost.visible = this.estTrail.visible = m === "lost";
+    this.ghost.visible = this.estTrail.visible = this.mapGhost.visible = this.mapTrail.visible = m === "lost";
+    if (this.mapCloud) this.mapCloud.mesh.visible = m === "lost";
     this.pathLine.visible = this.goalRing.visible = planning;
     this.patrolDots.forEach((d) => (d.visible = planning));
     this.furnMeshes.forEach((g) => (g.visible = !match || g.userData.kind === "furniture")); // boxes hide while matching
     this.controls.enabled = !match;
     if (m === "lost") this.restartTracker();
-    else this.generation++; // ignore scans in flight from the previous mode
+    else {
+      this.generation++; // ignore scans in flight from the previous mode
+      this.scanQueue.length = 0;
+    }
     if (match) this.buildIcp();
     this.tip.classList.remove("on");
     this.setView(match ? "top" : "3d", instant);
@@ -536,7 +572,7 @@ export class Field {
   }
 
   private objectAt(e: PointerEvent): THREE.Group | null {
-    if (this.mode === "match" || this.mode === "lost") return null;
+    if (this.mode === "match") return null;
     this.floorAt(e);
     const hit = this.raycaster.intersectObjects(this.pickables, false)[0];
     return hit ? (hit.object.userData.group as THREE.Group) : null;
@@ -605,8 +641,7 @@ export class Field {
     if (obj) {
       this.showTip(this.drag ? `${obj.label} · x ${obj.x.toFixed(2)} m, y ${obj.y.toFixed(2)} m` : `${obj.label} · drag to move`, this.drag ? "grabbing" : "grab");
     } else if (p && p.x >= 0 && p.y >= 0 && p.x <= this.W && p.y <= this.H) {
-      const canDrop = this.mode === "plan" || this.mode === "hero";
-      this.showTip(`x ${p.x.toFixed(2)} m · y ${p.y.toFixed(2)} m${canDrop ? " · click to drop a box" : ""}`, canDrop ? "drop" : "");
+      this.showTip(`x ${p.x.toFixed(2)} m · y ${p.y.toFixed(2)} m · click to drop a box`, "drop"); // match mode returned above
     } else {
       this.tip.classList.remove("on");
       this.host.dataset.cursor = "";
@@ -629,7 +664,7 @@ export class Field {
       this.drag = null;
       this.controls.enabled = true;
       this.host.dataset.cursor = "grab";
-    } else if (this.down && !this.down.moved && (this.mode === "plan" || this.mode === "hero")) {
+    } else if (this.down && !this.down.moved && this.mode !== "match") {
       const p = this.floorAt(e);
       if (p && !this.furniture.some((f) => insideFurniture(p, f, 0.05))) this.addBox(p);
     }
@@ -717,21 +752,45 @@ export class Field {
   }
 
   // ===================== engine: scanning & tracking =====================
-  private maybeScan(now: number): void {
-    if (this.mode === "match" || this.scanInFlight || now - this.scanAt < SCAN_MS || this.engineState !== "ready") return;
-    this.scanAt = now;
+  // Advances the simulated world by dt: robot motion in small slices, and a scan
+  // pose captured each time the simulated clock passes a scan time. If the engine
+  // is behind (queue full), simulated time stops until it catches up, so the
+  // estimators always see an honest 10 Hz sensor even on a slow machine.
+  private advanceWorld(dt: number): number {
+    let moved = 0;
+    let remaining = dt;
+    while (remaining > 1e-9) {
+      if (this.engineState === "ready" && this.scanQueue.length >= MAX_QUEUED_SCANS) break;
+      const h = Math.min(remaining, SIM_STEP, Math.max(this.nextScanIn, 1e-6));
+      moved += this.driveStep(h);
+      remaining -= h;
+      this.nextScanIn -= h;
+      if (this.nextScanIn <= 1e-9) {
+        if (this.engineState === "ready") this.scanQueue.push({ ...this.robot });
+        this.nextScanIn = SCAN_PERIOD;
+      }
+    }
+    return moved;
+  }
+
+  private maybeScan(): void {
+    if (this.mode === "match" || this.scanInFlight || this.engineState !== "ready" || !this.scanQueue.length) return;
     this.scanInFlight = true;
-    const pose = { ...this.robot };
+    const pose = this.scanQueue.shift()!;
     const gen = this.generation;
     const lostMode = this.mode === "lost";
     const maxRange = lostMode ? this.range : 8;
     const run = async () => {
       const e = engine();
       if (lostMode && this.needsTrackerReset) {
-        // The tracker's only pose input: where it starts. Its first scan is taken there.
+        // The estimators' only pose input: where they start. Their first scan is taken
+        // there. The map is surveyed from the house as it is right now, at the patrol
+        // points (answer-key poses), like a mapping drive before the experiment.
         this.needsTrackerReset = false;
-        await e.reset(pose);
+        const survey = this.scenario.patrol.map((p) => ({ x: p.x, y: p.y, theta: 0 }));
+        const done = await e.reset(pose, this.obstacles(), survey);
         if (gen !== this.generation) return;
+        this.showMap(done.mapPoints);
         this.trackerRunning = true;
       }
       const res = await e.step({
@@ -753,10 +812,47 @@ export class Field {
           this.setLine(this.estTrail, this.estPts);
         }
       }
+      if (res.map) {
+        const m = res.map;
+        this.mapEstimate = m.estimate;
+        this.mapLost = m.lost;
+        this.mapWeak = m.weak;
+        this.inliers = m.lost ? null : m.inliers;
+        if (m.lost) this.mapLostScans++;
+        this.mapError = Math.hypot(m.estimate.x - pose.x, m.estimate.y - pose.y);
+        const last = this.mapPts[this.mapPts.length - 1];
+        if (!last || Math.hypot(last.x - m.estimate.x, last.y - m.estimate.y) > 0.03) {
+          this.mapPts.push({ x: m.estimate.x, y: m.estimate.y });
+          if (this.mapPts.length > MAX_LINE) this.mapPts.shift();
+          this.setLine(this.mapTrail, this.mapPts, 0.008);
+        }
+      }
     };
     run()
       .catch(() => {})
       .finally(() => (this.scanInFlight = false));
+  }
+
+  // The robot's map, as the C++ engine built it (occupied-cell hit points).
+  private showMap(flat: Float64Array): void {
+    if (this.mapCloud) {
+      this.scene.remove(this.mapCloud.mesh);
+      this.mapCloud.mesh.geometry.dispose();
+    }
+    const n = flat.length / 2;
+    const cloud = DotCloud.flat(Math.max(1, n), 0.022, color.mapPoint);
+    for (let i = 0; i < n; i++) {
+      const v = this.w2t(flat[2 * i], flat[2 * i + 1], 0.02);
+      cloud.set(i, v.x, v.y, v.z);
+    }
+    cloud.commit();
+    // Map points lie on wall and furniture faces; draw them over the geometry.
+    (cloud.mesh.material as THREE.Material).depthTest = false;
+    cloud.mesh.renderOrder = 5;
+    cloud.mesh.visible = this.mode === "lost";
+    this.mapCloud = cloud;
+    this.mapCount = n;
+    this.scene.add(cloud.mesh);
   }
 
   private applyScan(pose: Pose, ranges: Float64Array, maxRange: number): void {
@@ -849,6 +945,20 @@ export class Field {
     this.icpPairs.visible = !!frame.pairs && !this.icpDrag;
   }
 
+  // Eases a drawn ghost toward the latest 10 Hz estimate; hidden until there is one.
+  private easeGhost(g: THREE.Group, target: Pose | null, shown: Pose | null, dt: number): Pose | null {
+    g.visible = !!target;
+    if (!target) return null;
+    const s = shown ?? { ...target };
+    const k = Math.min(1, dt * 14);
+    s.x += (target.x - s.x) * k;
+    s.y += (target.y - s.y) * k;
+    s.theta += wrapAngle(target.theta - s.theta) * k;
+    g.position.copy(this.w2t(s.x, s.y));
+    g.rotation.y = s.theta;
+    return s;
+  }
+
   // ===================== frame loop =====================
   private readonly loop = (now: number): void => {
     this.raf = requestAnimationFrame(this.loop);
@@ -869,13 +979,13 @@ export class Field {
     if (this.mode === "match") this.updateIcp(now);
     else {
       this.maybePlan(now);
-      const d = this.driveStep(dt);
+      const d = this.advanceWorld(dt);
       if (this.trackerRunning) this.driven += d;
       if (d > 0 && now - this.pathDrawnAt > 120) {
         this.pathDrawnAt = now;
         this.drawPath();
       }
-      this.maybeScan(now);
+      this.maybeScan();
       const r = this.robot;
       this.robotMesh.position.copy(this.w2t(r.x, r.y));
       this.robotMesh.rotation.y = r.theta;
@@ -885,18 +995,10 @@ export class Field {
         if (this.trailPts.length > 400) this.trailPts.shift();
         this.setLine(this.trueTrail, this.trailPts);
       }
-      if (this.mode === "lost" && this.estimate) {
-        // ease the drawn ghost toward the latest 10 Hz estimate
-        const s = this.shownEstimate ?? { ...this.estimate };
-        const k = Math.min(1, dt * 14);
-        s.x += (this.estimate.x - s.x) * k;
-        s.y += (this.estimate.y - s.y) * k;
-        s.theta += wrapAngle(this.estimate.theta - s.theta) * k;
-        this.shownEstimate = s;
-        this.ghost.visible = true;
-        this.ghost.position.copy(this.w2t(s.x, s.y));
-        this.ghost.rotation.y = s.theta;
-      } else if (this.mode === "lost") this.ghost.visible = false;
+      if (this.mode === "lost") {
+        this.shownEstimate = this.easeGhost(this.ghost, this.estimate, this.shownEstimate, dt);
+        this.shownMap = this.easeGhost(this.mapGhost, this.mapEstimate, this.shownMap, dt);
+      }
       if (this.goalRing.visible) {
         const g = this.scenario.patrol[this.goal];
         this.goalRing.position.copy(this.w2t(g.x, g.y, 0.01));
@@ -921,8 +1023,17 @@ export class Field {
       this.opts.onStats({
         engine: this.engineState, drive: this.drive, goal: this.goal, skipped: this.skipped, plans: this.plans,
         lastPlanMs: this.lastPlanMs, expanded: this.expanded, pose: { ...this.robot }, lost: this.lost,
-        lostScans: this.lostScans, error: this.error, driven: this.driven, scanMs: this.scanMs,
+        lostScans: this.lostScans, error: this.error, mapError: this.mapError, mapLost: this.mapLost,
+        mapLostScans: this.mapLostScans, mapWeak: this.mapWeak, inliers: this.inliers, mapPoints: this.mapCount,
+        driven: this.driven, scanMs: this.scanMs,
       });
+      // Dev builds only (removed from production): lets browser tests read engine timing.
+      if (import.meta.env.DEV && this.mode === "lost")
+        Object.assign(window, {
+          __atlasScanMs: this.scanMs,
+          __atlasLost: { truth: { ...this.robot }, map: this.mapEstimate, tracker: this.estimate, mapLost: this.mapLost,
+            mapWeak: this.mapWeak, inliers: this.inliers, drive: this.drive, goal: this.goal, mapLostScans: this.mapLostScans },
+        });
     }
   };
 }

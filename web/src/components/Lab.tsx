@@ -14,7 +14,7 @@ const MODES: Record<LabMode, { n: number; tab: string; title: string; hint: stri
   },
   lost: {
     n: 2, tab: "Get it lost", title: "Get the robot lost",
-    hint: "The tracker only chains scan-to-scan matches, so small errors add up. Shorten the range or add noise and watch its estimate (blue ring) slide away from where the robot really is.",
+    hint: "Two estimators get the same scans. The blue ring matches each scan against a map of the house; the gray ring only compares scans with each other, so its errors add up. Shorten the range, add noise, or move furniture so the house no longer matches the map.",
   },
   plan: {
     n: 3, tab: "Rearrange the house", title: "Rearrange the house",
@@ -76,15 +76,18 @@ export function Lab() {
     metrics = [["Pass", icpText.pass], ["Error", icpText.error], ["Pair RMSE", icpText.rmse]];
   } else if (mode === "lost") {
     const s = stats;
+    // The chip follows the map localizer; the gray tracker is the comparison.
     if (!s || s.engine !== "ready") chip = driveChip(s);
-    else if (s.error === null) chip = { tone: "run", text: "Starting tracker" };
-    else if (s.lost) chip = { tone: "bad", text: "Lost: too few walls in range" };
-    else if (s.error < 0.05) chip = { tone: "ok", text: "Tracking" };
-    else chip = { tone: "warn", text: "Matching, but off course" };
+    else if (s.mapError === null) chip = { tone: "run", text: "Mapping the house" };
+    else if (s.mapLost) chip = { tone: "bad", text: "Lost this scan: predicting" };
+    else if (s.mapWeak) chip = { tone: "warn", text: "Walls don't pin it down" };
+    else if (s.inliers !== null && s.inliers < 0.8) chip = { tone: "warn", text: "House differs from the map" };
+    else if (s.mapError < 0.05) chip = { tone: "ok", text: "On track with the map" };
+    else chip = { tone: "warn", text: "Off course" };
     metrics = [
-      ["Error", s?.error == null ? "–" : formatLength(s.error)],
-      ["Lost scans", String(s?.lostScans ?? 0)],
-      ["Driven", `${(s?.driven ?? 0).toFixed(1)} m`],
+      ["With map", s?.mapError == null ? "–" : formatLength(s.mapError)],
+      ["No map", s?.error == null ? "–" : formatLength(s.error)],
+      ["Map match", s?.inliers == null ? "–" : `${Math.round(s.inliers * 100)}%`],
     ];
   } else {
     chip = driveChip(stats);
@@ -159,9 +162,14 @@ export function Lab() {
                     <input id="lab-noise" type="range" min={0} max={5} step={0.5} value={noiseCm} onChange={(e) => setNoiseCm(+e.target.value)} />
                   </div>
                   <div className="row">
-                    <button type="button" className="btn ghost" onClick={() => field.current?.restartTracker()}>Restart tracker</button>
+                    <button type="button" className="btn ghost" onClick={() => field.current?.restartTracker()}>Re-map and restart</button>
                   </div>
-                  <p className="fine">The blue ring is the C++ tracker's estimate. It gets only the scans and its starting pose. Error compares it with the simulator's answer key.</p>
+                  <ul className="legend" aria-label="Legend">
+                    <li><span className="sw sw-map" aria-hidden="true" />With map: scan-to-map</li>
+                    <li><span className="sw sw-base" aria-hidden="true" />No map: scan-to-scan</li>
+                    <li><span className="sw sw-dots" aria-hidden="true" />The map{stats?.mapPoints ? ` (${stats.mapPoints.toLocaleString()} points)` : ""}</li>
+                  </ul>
+                  <p className="fine">Both C++ estimators get only the scans and the starting pose. The map is surveyed from the house as it was at restart. Errors compare with the simulator's answer key; map match is the share of scan points that fit the map.</p>
                 </>
               )}
               {mode === "plan" && (

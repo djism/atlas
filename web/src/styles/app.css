@@ -184,6 +184,13 @@ a { color: inherit; }
 .controls label { display: flex; justify-content: space-between; gap: var(--s-2); font: 600 14px/1.2 var(--font-body); margin-bottom: 6px; }
 .controls output { font: 500 13px/1.2 var(--font-mono); color: var(--dim); font-variant-numeric: tabular-nums; }
 .controls input[type="range"] { width: 100%; accent-color: var(--ink); }
+/* Legend for the two estimates and the map, matching the 3D field's colors. */
+.legend { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px 16px; font: 500 12px/1.3 var(--font-mono); color: var(--dim); }
+.legend li { display: flex; align-items: center; gap: 7px; }
+.legend .sw { width: 14px; height: 14px; border-radius: 50%; flex: none; }
+.legend .sw-map { border: 3px solid var(--signal); }
+.legend .sw-base { border: 3px solid var(--baseline); }
+.legend .sw-dots { background: radial-gradient(circle, var(--map-point) 2px, transparent 2.5px) 0 0 / 5px 5px; border-radius: 3px; }
 .seg.wide { box-shadow: none; background: var(--mist); width: 100%; }
 .seg.wide button { flex: 1; }
 @media (max-width: 760px) {

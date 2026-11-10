@@ -1,8 +1,10 @@
 // JavaScript bindings for the Atlas core, compiled only by Emscripten.
 // The core library (src/, include/) has no browser dependencies; this file
 // exposes a small, explicit surface: scan simulation, planning, one ICP run
-// replayed pass by pass, and a tracker.
+// replayed pass by pass, a tracker, a surveyed map, and a map localizer.
 #include "atlas/icp.hpp"
+#include "atlas/localizer.hpp"
+#include "atlas/mapping.hpp"
 #include "atlas/matching.hpp"
 #include "atlas/planner.hpp"
 #include "atlas/simulation.hpp"
@@ -190,6 +192,62 @@ public:
 private:
     atlas::ScanTracker tracker_;
 };
+
+// Surveyed map: one noise-free scan per survey pose (answer-key poses, world
+// frame), like a mapping drive. survey_flat: x, y, theta triplets.
+// Returns { points: Float64Array (flat x, y, map = world frame), cells } or { error }.
+val buildMap(val walls_flat, val survey_flat, double resolution, double survey_range) {
+    try {
+        const auto walls = segmentsFromFlat(emscripten::convertJSArrayToNumberVector<double>(walls_flat));
+        const auto flat = emscripten::convertJSArrayToNumberVector<double>(survey_flat);
+        std::vector<atlas::Pose2D> survey;
+        for (std::size_t i = 0; i + 2 < flat.size(); i += 3) survey.push_back({flat[i], flat[i + 1], flat[i + 2]});
+        atlas::LidarConfig lidar;
+        lidar.max_range = survey_range;
+        const atlas::OccupancyMap map = atlas::surveyMap(walls, survey, lidar, resolution);
+        std::vector<double> points;
+        for (const auto& p : map.occupiedPoints()) points.insert(points.end(), {p.x, p.y});
+        val result = val::object();
+        result.set("points", toFloat64Array(points));
+        result.set("cells", static_cast<double>(map.columns() * map.rows()));
+        return result;
+    } catch (const std::exception& e) {
+        return errorObject(e);
+    }
+}
+
+// Scan-to-map localizer. Gets the map points and the initial pose only.
+class Localizer {
+public:
+    Localizer(val map_flat, double x, double y, double theta)
+        : localizer_(pointsFromFlat(emscripten::convertJSArrayToNumberVector<double>(map_flat)), {x, y, theta}) {}
+
+    // points_flat: flat x, y in current sensor axes. Returns the estimate and
+    // diagnostics, or { error }.
+    val update(val points_flat) {
+        try {
+            const auto scan = pointsFromFlat(emscripten::convertJSArrayToNumberVector<double>(points_flat));
+            const atlas::LocalizerStep step = localizer_.update(scan);
+            val result = val::object();
+            result.set("x", step.pose_in_map.x);
+            result.set("y", step.pose_in_map.y);
+            result.set("theta", step.pose_in_map.theta);
+            result.set("lost", step.lost);
+            result.set("status", std::string(statusName(step.status)));
+            result.set("jumpRejected", step.jump_rejected);
+            result.set("weak", step.weakly_constrained);
+            result.set("observability", step.observability.weak);
+            result.set("inliers", step.inlier_fraction);
+            result.set("recovered", step.recovered);
+            return result;
+        } catch (const std::exception& e) {
+            return errorObject(e);
+        }
+    }
+
+private:
+    atlas::MapLocalizer localizer_;
+};
 }  // namespace
 
 EMSCRIPTEN_BINDINGS(atlas_engine) {
@@ -199,4 +257,8 @@ EMSCRIPTEN_BINDINGS(atlas_engine) {
     emscripten::class_<Tracker>("Tracker")
         .constructor<double, double, double>()
         .function("update", &Tracker::update);
+    emscripten::function("buildMap", &buildMap);
+    emscripten::class_<Localizer>("Localizer")
+        .constructor<val, double, double, double>()
+        .function("update", &Localizer::update);
 }

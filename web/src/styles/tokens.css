@@ -15,6 +15,8 @@
   --line: #dcdfe4;
   --dim: #5a616c;
   --signal: #2346ff;
+  --map-point: #9fb0ff; /* the robot's map: a pale tint of signal */
+  --baseline: #8a909a;  /* the no-map tracker: the comparison, not the answer */
   --ok: #0e8a4f;
   --warn: #b25e00;
   --bad: #c0262d;

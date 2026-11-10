@@ -3,7 +3,14 @@ import type { Point, Pose } from "../types";
 // Messages between the page (main thread) and the engine worker. Every request
 // carries an id; the worker answers in order, one message at a time.
 export type ToEngine =
-  | { type: "reset"; pose: Pose } // (re)start the tracker at a known pose
+  | {
+      // (Re)start both estimators at a known pose. The map is surveyed from
+      // `walls` as they are now, at the answer-key `survey` poses.
+      type: "reset";
+      pose: Pose;
+      walls: Float64Array; // flat segments, world frame
+      survey: Pose[];
+    }
   | {
       type: "step";
       id: number;
@@ -13,7 +20,7 @@ export type ToEngine =
       maxRange: number;
       noise: number;
       seed: number;
-      track: boolean; // also run the tracker on this scan
+      track: boolean; // also run the tracker and the map localizer on this scan
     }
   | {
       type: "plan";
@@ -46,7 +53,21 @@ export interface StepResult {
   estimate: Pose | null; // tracker's world pose estimate (null when not tracking)
   lost: boolean;
   status: IcpStatus | null;
+  map: MapStep | null; // map localizer's result (null when not tracking)
   engineMs: number; // simulate (+ track) time inside the worker
+}
+
+export interface MapStep {
+  estimate: Pose; // sensor pose in the map (= world) frame
+  lost: boolean; // registration failed or a jump was rejected; pose predicted
+  weak: boolean; // walls left one direction unconstrained; prediction used along it
+  inliers: number; // share of scan points that matched the map, 0..1
+}
+
+export interface ResetDone {
+  type: "reset-done";
+  mapPoints: Float64Array; // flat x, y, world frame
+  mapMs: number;
 }
 
 export interface PlanResult {
@@ -74,6 +95,6 @@ export type Reply = StepResult | PlanResult | AlignResult;
 
 export type FromEngine =
   | { type: "ready" }
-  | { type: "reset-done" }
+  | ResetDone
   | Reply
   | { type: "error"; id?: number; message: string };
