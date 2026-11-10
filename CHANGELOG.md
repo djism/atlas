@@ -51,6 +51,17 @@
 - Added `runExperiment()`, `circlePath()`, and the `atlas_experiment` CLI:
   tracker vs localizer over paths, ranges, noise levels, and seeds, with
   failure flags and optional CSV. Documented in `docs/localization.md`.
+- Added `surveyMap()`: builds a map from survey scans; used by the experiment
+  and the browser.
+- **Changed localizer behavior:** results that fit less than half of the scan
+  are rejected (`min_inlier_fraction`); failed scans trigger a heading search
+  scored by `countInliers()` (`recovered`, `poor_fit` in `LocalizerStep`); jump
+  limits are now 0.3 m and 0.5 rad (were 0.15 m and 0.2 rad).
+- WebAssembly: `buildMap` and a `Localizer` class.
+- Sandbox "Get it lost" tab: map localizer (blue) beside the no-map tracker
+  (gray), the map drawn as points, furniture editable, map-match metric.
+- Sandbox sensor now runs on simulated time (a scan every 0.1 s of simulated
+  motion; the world waits if the engine is behind).
 
 ## 0.1.0 — 2026-11-04
 

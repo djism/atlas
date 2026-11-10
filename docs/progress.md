@@ -298,6 +298,49 @@ runs. Unoptimized test suite takes about 15 s.
 Show the measured result in the sandbox: add the map localizer to the "Get it
 lost" tab beside the tracker, then plan from the estimated pose (Phase 2).
 
+## 2026-11-09 (session 2) — map localizer in the sandbox; doorway runaway fixed
+
+### Implemented
+
+- `surveyMap()`; WASM `buildMap` and `Localizer`; "Get it lost" shows the map
+  localizer (blue) and the no-map tracker (gray) on the same scans, the map as
+  pale points, and a map-match share. Furniture can be moved in that tab.
+- Localizer: fit check (reject if under half the scan matches), heading
+  recovery (score headings within 1 rad by inlier count, then ICP), jump
+  limits 0.3 m and 0.5 rad.
+- Sandbox sensor on simulated time with a bounded queue.
+
+### Lesson
+
+The browser found what scripted circles could not. At the doorway the robot
+spins in place; a heading error of 0.3 rad pushes far wall points outside the
+0.3 m pair gate, ICP converges wrongly, and with no fit check that answer was
+accepted. The simulation also hid a timing bug: scans only when the previous
+one finished, so a busy page lowered the sensor rate below 2 Hz. My first
+checks were too short and too similar (same seed, same timing); varying GPU,
+CPU speed, and window size reproduced the user's report.
+
+### Validation
+
+C++ doorway reproduction: 40 of 40 runs failed before, 0 of 40 after. Stop,
+spin, then drive with slow scans: 6 to 10 of 10 failed, then 0. Regression
+tests in the house layout fail if either the fit check or the recovery is
+turned off. Browser: four 5-minute runs (normal, CPU 2x and 3x slower, other
+window sizes) with 0 lost scans. Experiment 10 m rows unchanged; 3 m rows
+still fail (one improved from 22 m to 16 cm worst). Engine time per scan with
+both estimators: about 21 ms median in headless Chrome.
+
+### Limitations
+
+Short range still fails. The jump limits and constant-velocity guess are per
+scan, not per second. Recovery searches heading only. The sandbox map is
+surveyed at answer-key poses and never updated. Brute-force nearest neighbors.
+
+### Next smallest step
+
+Plan from the estimated pose, or first simulate wheel odometry as the motion
+prediction so spins and sudden starts no longer depend on guessing.
+
 ### Daily checkpoint template
 
 - Concept understood:
