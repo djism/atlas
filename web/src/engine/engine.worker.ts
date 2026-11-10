@@ -7,8 +7,8 @@ import type { Point, Pose } from "../types";
 declare const self: DedicatedWorkerGlobalScope;
 
 let engine: MainModule | null = null;
-let tracker: Tracker | null = null;
-let localizer: Localizer | null = null;
+// One estimator pair per owner (each 3D view simulates its own robot).
+const estimators = new Map<number, { tracker: Tracker; localizer: Localizer }>();
 const MAP_RESOLUTION = 0.05; // meters
 const SURVEY_RANGE = 20; // meters: the survey sees the whole house
 const post = (message: FromEngine, transfer: Transferable[] = []) => self.postMessage(message, transfer);
@@ -23,18 +23,20 @@ const ready = createAtlasEngine()
 function handle(e: MainModule, msg: ToEngine): void {
   if (msg.type === "reset") {
     const t0 = performance.now();
-    tracker?.delete();
-    localizer?.delete();
-    tracker = localizer = null;
+    const old = estimators.get(msg.owner);
+    old?.tracker.delete();
+    old?.localizer.delete();
+    estimators.delete(msg.owner);
     const survey = Float64Array.from(msg.survey.flatMap((p) => [p.x, p.y, p.theta]));
     const map = e.buildMap(msg.walls, survey, MAP_RESOLUTION, SURVEY_RANGE);
     if (map.error) return post({ type: "error", message: `map: ${map.error}` });
-    tracker = new e.Tracker(msg.pose.x, msg.pose.y, msg.pose.theta);
+    let localizer: Localizer;
     try {
       localizer = new e.Localizer(map.points, msg.pose.x, msg.pose.y, msg.pose.theta);
     } catch (err) {
       return post({ type: "error", message: `localizer: ${String(err)}` });
     }
+    estimators.set(msg.owner, { tracker: new e.Tracker(msg.pose.x, msg.pose.y, msg.pose.theta), localizer });
     const mapPoints: Float64Array = map.points;
     post({ type: "reset-done", mapPoints, mapMs: performance.now() - t0 }, [mapPoints.buffer]);
     return;
@@ -76,12 +78,14 @@ function handle(e: MainModule, msg: ToEngine): void {
   let status: IcpStatus | null = null;
   let mapStep: MapStep | null = null;
   if (msg.track) {
-    if (!tracker || !localizer) return post({ type: "error", id: msg.id, message: "tracking requested before reset" });
-    const est = tracker.update(scan.points);
-    if (est.error) return post({ type: "error", id: msg.id, message: est.error });
-    estimate = { x: est.x, y: est.y, theta: est.theta };
-    lost = est.lost;
-    status = est.status as IcpStatus;
+    const est = estimators.get(msg.owner);
+    if (!est) return post({ type: "error", id: msg.id, message: "tracking requested before reset" });
+    const { tracker, localizer } = est;
+    const t = tracker.update(scan.points);
+    if (t.error) return post({ type: "error", id: msg.id, message: t.error });
+    estimate = { x: t.x, y: t.y, theta: t.theta };
+    lost = t.lost;
+    status = t.status as IcpStatus;
     const m = localizer.update(scan.points);
     if (m.error) return post({ type: "error", id: msg.id, message: m.error });
     mapStep = { estimate: { x: m.x, y: m.y, theta: m.theta }, lost: m.lost, weak: m.weak, inliers: m.inliers };

@@ -7,6 +7,7 @@ export type ToEngine =
       // (Re)start both estimators at a known pose. The map is surveyed from
       // `walls` as they are now, at the answer-key `survey` poses.
       type: "reset";
+      owner: number; // which view's estimators (each 3D view has its own robot)
       pose: Pose;
       walls: Float64Array; // flat segments, world frame
       survey: Pose[];
@@ -21,6 +22,7 @@ export type ToEngine =
       noise: number;
       seed: number;
       track: boolean; // also run the tracker and the map localizer on this scan
+      owner: number; // whose estimators (see reset)
     }
   | {
       type: "plan";

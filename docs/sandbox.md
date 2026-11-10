@@ -75,9 +75,18 @@ Main thread (React + Three.js)               Web Worker (C++ via WASM)
   lowered the sensor rate below 2 Hz, and the localizer ran away at the
   doorway spin. Four 5-minute runs, including one with the CPU slowed 3x,
   now finish with 0 lost scans.)
-- **Planner (simplified).** Plans from the robot's **true** position on the
-  **known** floor plan, so it does not depend on localization. Real robots plan
-  from their estimate; closing that loop is roadmap work.
+- **The robot drives on its belief.** In every view except "Match two scans",
+  the robot plans and steers from its **estimate**, never its true position.
+  The belief is the latest map-localizer estimate composed with the motion
+  commanded since that scan was captured (perfect odometry: no wheel slip yet).
+  Each command (turn, then forward step) is applied to the true robot. If the
+  step would put the robot's disc into a wall or furniture, a simulated bumper
+  stops it, odometry sees no forward motion, and it replans from its belief.
+  The robot does not move until its first estimate arrives ("Localizing").
+- **Planner (simplified).** Plans from the belief, but on the **true** floor
+  plan (furniture where it really is). A real robot would plan on its own map.
+- **One estimator pair per view.** The hero and the lab each simulate a robot;
+  the worker keeps a tracker and localizer per view (`owner` in the protocol).
 - **Scenario plugins.** A scenario (`web/src/scenarios/`) is data: walls,
   furniture (with heights for 3D), patrol points, robot, default sensor.
 
@@ -103,6 +112,9 @@ Main thread (React + Three.js)               Web Worker (C++ via WASM)
 | Get it lost, default sensor, 20 s | With map 1.1 mm, no map 2.2 mm, map match 93%; 1,085 map points |
 | Get it lost, 6 unmapped boxes dropped | With map 0.3 mm (chip: "House differs from the map", 79% match); no map 3.9 cm |
 | Get it lost, 3 m range, re-mapped, 25 s | With map 1.4 mm, no map 8.3 cm |
+| Robot steering from its estimate, 4 x 5 min (normal, CPU 2x/3x slower, other window sizes) | 0 bumps, 0 lost scans |
+| Planner tab, 3 boxes dropped, 25 s | 9 replans from the estimate, 0 bumps |
+| Get it lost, 1.5 m range | Estimate 5.8 m off; the robot steered into the desk area and bumped ("Bumped: it was not where it thought") |
 | Engine time per scan, both estimators | median 21 ms, 90th percentile 26 ms (was 4.8 ms with the tracker only) |
 
 These are single live runs, not seed sweeps (the doorway runaway and its fix
@@ -123,7 +135,11 @@ against a map are the fixes.
 - Localization uses brute-force nearest neighbors over all map points; that
   is most of the 21 ms per scan. A spatial index is the known fix.
 - The jump limits assume how fast motion can change between scans.
-- Planner is simplified (true position, known floor plan); no dynamic obstacles.
+- Planner is given the true floor plan (it plans from the estimate); no dynamic
+  obstacles. Odometry is perfect (commands execute exactly), so the belief
+  between scans adds no error of its own.
+- After a bump against a wall it cannot see past, a badly lost robot keeps
+  pushing and replanning; there is no recovery behavior.
 - One scenario (home). Street-car and warehouse scenarios are planned.
 - Not yet deployed; no browser tests in CI (CI builds and tests the C++ only).
 - Bundle is ~690 KB (~190 KB gzip), mostly Three.js; not yet code-split.

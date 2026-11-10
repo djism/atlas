@@ -14,11 +14,11 @@ const MODES: Record<LabMode, { n: number; tab: string; title: string; hint: stri
   },
   lost: {
     n: 2, tab: "Get it lost", title: "Get the robot lost",
-    hint: "Two estimators get the same scans. The blue ring matches each scan against a map of the house; the gray ring only compares scans with each other, so its errors add up. Shorten the range, add noise, or move furniture so the house no longer matches the map.",
+    hint: "Two estimators get the same scans. The blue ring matches each scan against a map of the house; the gray ring only compares scans with each other, so its errors add up. The robot steers by the blue ring, so if it is wrong, the robot drives wrong. Shorten the range, add noise, or move furniture so the house no longer matches the map.",
   },
   plan: {
     n: 3, tab: "Rearrange the house", title: "Rearrange the house",
-    hint: "Drag any furniture, or click the floor to drop a box. The planner searches a 5 cm grid and finds a new route. Block the doorway and see what happens.",
+    hint: "Drag any furniture, or click the floor to drop a box. The planner searches a 5 cm grid from where the robot thinks it is (blue ring) and finds a new route. Block the doorway and see what happens.",
   },
 };
 
@@ -79,6 +79,7 @@ export function Lab() {
     // The chip follows the map localizer; the gray tracker is the comparison.
     if (!s || s.engine !== "ready") chip = driveChip(s);
     else if (s.mapError === null) chip = { tone: "run", text: "Mapping the house" };
+    else if (s.bumped) chip = { tone: "bad", text: "Bumped: it was not where it thought" };
     else if (s.mapLost) chip = { tone: "bad", text: "Lost this scan: predicting" };
     else if (s.mapWeak) chip = { tone: "warn", text: "Walls don't pin it down" };
     else if (s.inliers !== null && s.inliers < 0.8) chip = { tone: "warn", text: "House differs from the map" };
@@ -94,7 +95,7 @@ export function Lab() {
     metrics = [
       ["Plans made", String(stats?.plans ?? 0)],
       ["Last plan", `${(stats?.lastPlanMs ?? 0).toFixed(1)} ms`],
-      ["Cells searched", (stats?.expanded ?? 0).toLocaleString()],
+      ["Bumps", String(stats?.bumps ?? 0)],
     ];
   }
 
@@ -179,7 +180,7 @@ export function Lab() {
                     <button type="button" className="btn ghost" onClick={() => field.current?.clearBoxes()}>Clear boxes</button>
                     <button type="button" className="btn ghost" onClick={() => field.current?.resetRoom()}>Reset room</button>
                   </div>
-                  <p className="fine">Simplified planner: it uses the known floor plan and the robot's true position, not its estimate.</p>
+                  <p className="fine">The robot plans and steers from its C++ map estimate, not its true position. Simplification: the planner is given the true floor plan; a real robot would plan on its own map.</p>
                 </>
               )}
             </div>

@@ -25,6 +25,15 @@ export function flattenSegments(segments: Segment[]): Float64Array {
   return out;
 }
 
+// Shortest distance from p to the segment a-b (world physics for the simulated robot).
+export function distanceToSegment(p: Point, a: Point, b: Point): number {
+  const ex = b.x - a.x;
+  const ey = b.y - a.y;
+  const len2 = ex * ex + ey * ey;
+  const u = len2 > 0 ? Math.max(0, Math.min(1, ((p.x - a.x) * ex + (p.y - a.y) * ey) / len2)) : 0;
+  return Math.hypot(p.x - a.x - u * ex, p.y - a.y - u * ey);
+}
+
 // Is p inside f, expanded by margin on every side?
 export function insideFurniture(p: Point, f: Furniture, margin = 0): boolean {
   const c = Math.cos(f.angle);

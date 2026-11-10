@@ -44,9 +44,9 @@ export class EngineClient {
   }
 
   // Surveys the map from `walls` and restarts the tracker and the map localizer at `pose`.
-  reset(pose: Pose, walls: Float64Array, survey: Pose[]): Promise<ResetDone> {
+  reset(owner: number, pose: Pose, walls: Float64Array, survey: Pose[]): Promise<ResetDone> {
     const done = new Promise<ResetDone>((resolve) => this.resetWaiters.push(resolve));
-    this.worker.postMessage({ type: "reset", pose, walls, survey } satisfies ToEngine);
+    this.worker.postMessage({ type: "reset", owner, pose, walls, survey } satisfies ToEngine);
     return done;
   }
 
