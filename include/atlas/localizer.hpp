@@ -22,13 +22,26 @@ struct MapLocalizerOptions {
     // Motion sanity check: a result farther than this from the guess is treated
     // as a failed registration (the robot cannot jump). It stops one bad slide
     // (e.g. along parallel walls) from becoming the next guess's velocity.
-    double max_correction_translation = 0.15;  // meters
-    double max_correction_rotation = 0.2;      // radians
+    // These are assumptions about how fast motion can CHANGE between scans. The
+    // rotation limit must cover a robot that starts turning at full rate: 0.2 rad
+    // rejected correct answers once a turn of 0.25 rad/scan began, permanently.
+    double max_correction_translation = 0.3;   // meters
+    double max_correction_rotation = 0.5;      // radians
     // Degeneracy handling: if the weakest translation direction gets less than
     // this share of the evidence (TranslationObservability::weak, 0 to 0.5), the
     // scan cannot fix position along it. ICP's answer is then kept only ACROSS
     // that direction; along it, the prediction (guess) is kept. 0 disables.
     double min_weak_observability = 0.05;  // chosen from two 3 m-range runs; see docs
+    // Fit check: reject a result if fewer than this share of scan points found a
+    // map partner within the pair gate. Good fits measured ~0.9; with several
+    // unmapped boxes ~0.8; wrong convergences 0.1 to 0.35.
+    double min_inlier_fraction = 0.5;
+    // Recovery when the guess fails: headings within +/- range of the guess, every
+    // `step`, scored by scan points within `recovery_inlier_distance` of the map;
+    // ICP then starts from the best. Range 0 disables.
+    double recovery_heading_range = 1.0;     // radians
+    double recovery_heading_step = 0.1;      // radians
+    double recovery_inlier_distance = 0.1;   // meters
 };
 
 struct LocalizerStep {
@@ -39,6 +52,8 @@ struct LocalizerStep {
     // The scan did not constrain position along observability.weak_direction
     // (map axes); the pose along it is the prediction, not a measurement.
     bool weakly_constrained = false;
+    bool poor_fit = false;   // ICP from the guess fit too little of the scan to be trusted
+    bool recovered = false;  // the guess failed; the heading search found the pose
     TranslationObservability observability;
     std::size_t pairs_kept = 0;
     std::size_t iterations = 0;
@@ -54,8 +69,10 @@ struct LocalizerStep {
 // pose IN THE MAP directly: errors do not chain from scan to scan.
 // The guess is the previous estimate moved by the previous motion (constant
 // velocity). Needs the initial pose; it does not find itself from nowhere. On
-// failure, or a result too far from the guess, the step is marked lost and the
-// pose is predicted. The first scan skips the jump check (no velocity yet).
+// failure, a poor fit, or a result too far from the guess, the localizer first
+// searches headings around the guess (recovery); if that also fails, the step
+// is marked lost and the pose is predicted. The first scan skips the jump
+// check (no velocity yet).
 // "Converged" still means stable, not correct: in a view of parallel walls ICP
 // can slide along them with no rise in residual. So when the scan's weakest
 // translation direction is too weak, the position along it is taken from the
@@ -72,6 +89,9 @@ public:
     std::size_t scansProcessed() const { return scans_; }
 
 private:
+    bool attempt(const std::vector<Point2D>& scan, const Pose2D& start, const Pose2D& guess,
+                 LocalizerStep& step, Pose2D& measured) const;
+
     MapLocalizerOptions options_;
     std::vector<Point2D> map_;
     std::vector<NormalEstimate> map_normals_;  // fitted once: the map does not change

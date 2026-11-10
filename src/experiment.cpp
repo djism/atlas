@@ -38,19 +38,8 @@ ExperimentReport runExperiment(const ExperimentConfig& config) {
     if (config.trajectory.empty()) throw std::invalid_argument("experiment needs a trajectory");
     if (config.survey.empty()) throw std::invalid_argument("experiment needs survey poses");
 
-    // 1. Map from survey scans at answer-key poses, sized to the walls plus a margin.
-    double min_x = std::numeric_limits<double>::infinity(), min_y = min_x;
-    double max_x = -min_x, max_y = -min_x;
-    for (const auto& w : config.walls)
-        for (const auto& p : {w.start, w.end}) {
-            min_x = std::min(min_x, p.x); max_x = std::max(max_x, p.x);
-            min_y = std::min(min_y, p.y); max_y = std::max(max_y, p.y);
-        }
-    const double margin = 0.5;
-    OccupancyMap map({min_x - margin, min_y - margin}, max_x - min_x + 2 * margin,
-                     max_y - min_y + 2 * margin, config.map_resolution);
-    for (const auto& pose : config.survey)
-        map.integrateScan(simulateLidarRanges(config.walls, pose, config.survey_lidar), config.survey_lidar, pose);
+    // 1. Map from survey scans at answer-key poses.
+    const OccupancyMap map = surveyMap(config.walls, config.survey, config.survey_lidar, config.map_resolution);
 
     ExperimentReport report;
     const auto map_points = map.occupiedPoints();

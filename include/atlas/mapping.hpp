@@ -79,4 +79,11 @@ private:
     std::vector<Point2D> hit_sum_;            // sum of beam end points per cell
     std::vector<std::uint32_t> hit_count_;
 };
+
+// Builds a map from one scan per survey pose (answer-key poses, world frame),
+// sized to the walls' bounding box plus `margin` meters. This is "mapping with
+// known poses", like a surveyed mapping drive. Throws std::invalid_argument for
+// no walls or no survey poses, or invalid inputs to the functions it calls.
+OccupancyMap surveyMap(const std::vector<Segment2D>& walls, const std::vector<Pose2D>& survey,
+                       const LidarConfig& lidar, double resolution, double margin = 0.5);
 }  // namespace atlas

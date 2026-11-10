@@ -80,6 +80,24 @@ std::vector<Point2D> OccupancyMap::occupiedCenters() const {
     return centers;
 }
 
+OccupancyMap surveyMap(const std::vector<Segment2D>& walls, const std::vector<Pose2D>& survey,
+                       const LidarConfig& lidar, double resolution, double margin) {
+    if (walls.empty()) throw std::invalid_argument("surveyMap needs walls");
+    if (survey.empty()) throw std::invalid_argument("surveyMap needs survey poses");
+    double min_x = std::numeric_limits<double>::infinity(), min_y = min_x;
+    double max_x = -min_x, max_y = -min_x;
+    for (const auto& w : walls)
+        for (const auto& p : {w.start, w.end}) {
+            min_x = std::min(min_x, p.x); max_x = std::max(max_x, p.x);
+            min_y = std::min(min_y, p.y); max_y = std::max(max_y, p.y);
+        }
+    OccupancyMap map({min_x - margin, min_y - margin}, max_x - min_x + 2 * margin,
+                     max_y - min_y + 2 * margin, resolution);
+    for (const auto& pose : survey)
+        map.integrateScan(simulateLidarRanges(walls, pose, lidar), lidar, pose);
+    return map;
+}
+
 std::vector<Point2D> OccupancyMap::occupiedPoints() const {
     std::vector<Point2D> points;
     for (std::size_t row = 0; row < rows_; ++row)

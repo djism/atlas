@@ -54,7 +54,7 @@ by the first scan; a tracker would keep that offset forever.
    The next guess then used that slide as the robot's velocity, and the error
    grew 0.25, 0.50, 0.80, 1.11 m.
 4. **The motion check limits, but does not solve, this.** A result more than
-   15 cm or 0.2 rad from the guess is rejected (the robot cannot jump). It
+   15 cm (later 0.3 m and 0.5 rad) from the guess is rejected (the robot cannot jump). It
    caught the 25 cm slide, but smaller slides (9 cm) still passed and added up.
 
 ## Degeneracy: trust the scan only where it has evidence
@@ -119,21 +119,26 @@ run and method (put it under `results/`, which Git ignores).
 cmake --build build && ./build/atlas_experiment --seeds 5 --csv results/runs.csv
 ```
 
-Result with 5 seeds (worst error over seeds; lost, weak, and jumps summed):
+Result with 5 seeds (worst error over seeds; lost, weak, and jumps summed),
+after the fit check and heading recovery below:
 
 | Path | Range | Noise | Tracker worst / drift | Localizer worst / mean | Lost | Weak | Jumps | Failed |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | A | 10 m | 1 cm | 3.7 cm / 0.13% | 3 mm / 1.1 mm | 0 | 0 | 0 | 0/5 |
 | A | 10 m | 3 cm | 19.4 cm / 0.65% | 10 mm / 3.2 mm | 0 | 0 | 0 | 0/5 |
-| A | 3 m | 1 cm | 8.0 m / 35% | 22.2 m / 1.42 m | 332 | 100 | 77 | 5/5 |
-| A | 3 m | 3 cm | 20.1 m / 89% | 11.2 m / 0.93 m | 651 | 97 | 226 | 5/5 |
+| A | 3 m | 1 cm | 8.0 m / 35% | 16.1 cm / 1.4 cm | 145 | 109 | 0 | 5/5 |
+| A | 3 m | 3 cm | 20.1 m / 89% | 17.6 m / 2.54 m | 557 | 104 | 33 | 5/5 |
 | B | 10 m | 1 cm | 2.3 cm / 0.10% | 4 mm / 1.0 mm | 0 | 0 | 0 | 0/5 |
 | B | 10 m | 3 cm | 9.9 cm / 0.33% | 11 mm / 3.0 mm | 0 | 0 | 0 | 0/5 |
-| B | 3 m | 1 cm | 6.6 m / 35% | 3.7 m / 0.35 m | 389 | 240 | 236 | 5/5 |
-| B | 3 m | 3 cm | 52.3 m / 251% | 19.1 m / 2.44 m | 604 | 137 | 185 | 5/5 |
+| B | 3 m | 1 cm | 6.6 m / 35% | 9.6 m / 1.12 m | 358 | 208 | 59 | 5/5 |
+| B | 3 m | 3 cm | 52.3 m / 251% | 11.3 m / 2.08 m | 544 | 129 | 106 | 5/5 |
 
 Failed means localizer worst error above 10 cm. Drift is the tracker's final
-error divided by distance driven (worst seed). About 30 s at -O2.
+error divided by distance driven (worst seed). About 50 s at -O2 (the heading
+search runs on every failed scan, which is frequent at 3 m). Before the fit
+check and recovery the 3 m localizer rows were 22.2 m, 11.2 m, 3.7 m, and
+19.1 m worst: one row improved a lot, the others moved both ways. The 10 m
+rows did not change.
 
 Reading it: with a 10 m sensor the map localizer never fails and is 10 to 20
 times more accurate than the tracker, whose drift keeps growing. With a 3 m
@@ -144,17 +149,66 @@ Bug found while building this: the harness first surveyed the map with the
 run's sensor, so 3 m runs got a map from a 3 m survey. The survey now has its
 own sensor setting (`survey_lidar`, default 10 m).
 
+## Fit check and heading recovery (found in the sandbox)
+
+In the browser house (12 x 8 m, two rooms), the localizer ran away at the
+doorway, where the robot stops and spins in place by about 1.7 rad. Reproduced
+in C++, it failed 10 of 10 runs even with scans every 0.1 s:
+
+- The robot starts spinning; the constant-velocity guess has no rotation. With
+  a 0.32 rad heading error, wall points 5 m away land about 1.6 m from their
+  map partners, beyond the 0.3 m pair gate. Only nearby points pair, and ICP
+  converged to a wrong pose that only 33% of the scan supported. In the small
+  test room every point is near, which is why the room tests never showed it.
+- Nothing checked the fit, so that pose was accepted. The next guess built on it.
+
+Two changes:
+
+1. **Fit check.** A result is rejected if fewer than half of the scan points
+   found a map partner within the gate (`min_inlier_fraction` 0.5). Good fits
+   measured about 0.9, with six unmapped boxes about 0.8; wrong convergences
+   0.1 to 0.35.
+2. **Heading recovery.** When the guess fails, headings within 1 rad of the
+   guess are tried every 0.1 rad. Each is scored by how many scan points land
+   within 10 cm of the map (`countInliers`), no ICP needed; then ICP starts
+   from the best, and the result must pass the fit check. Searching candidate
+   poses by scoring the raw scan against the map is the idea behind correlative
+   scan matching.
+
+Doorway spin with scans every 0.10, 0.15, 0.18, and 0.20 s, 10 seeds each:
+40 of 40 failed before, 0 of 40 after. A regression test runs the doorway in
+the house and also checks that turning off either change brings the runaway
+back.
+
+A second sandbox failure: right after a spin, the robot starts driving and the
+constant-velocity guess says "stand still". With scans 0.2 s or more apart the
+first step forward exceeded the 15 cm jump limit and was rejected over and
+over (6 to 10 of 10 runs failed). The translation limit is now 0.3 m: 0 of 10
+failed for scan gaps up to 0.3 s, and every earlier test still passes.
+
+The deeper cause in the browser was the simulation, not the localizer: the
+page took a new scan only after the previous one finished, so a busy browser
+quietly lowered the sensor rate, at times below 2 Hz. The sandbox now captures
+a scan every 0.1 s of simulated time and pauses the simulated world if the
+engine falls more than two scans behind (see [sandbox](sandbox.md)).
+
 ## Limits
 
-- Needs a good initial pose; once the error exceeds the 0.3 m gate it cannot
-  recover by itself (no relocalization).
+- Needs a good initial pose. Recovery searches heading only, around the
+  guess's position; a position error beyond the 0.3 m gate is not recovered
+  (no global relocalization).
 - With short range many scans see one wall or nothing; at 1.5 m range in this
   room most scans had no points at all.
 - Only translation observability is analyzed. A view that leaves rotation
   unconstrained (e.g. a round room) is not detected; a full 3x3 analysis would.
 - Along a weak direction the pose is dead reckoning from constant velocity.
-- The jump check assumes motion between scans is predictable within 15 cm.
-  Fast starts (no velocity known yet) would be rejected.
+- The jump check assumes motion between scans is predictable within 0.3 m and
+  0.5 rad, per scan, so it depends on the scan rate. The limits started at
+  15 cm and 0.2 rad; both rejected correct answers in the sandbox (a sudden
+  in-place turn, a sudden start). A time-aware motion model (speeds per second
+  times the actual time between scans), or wheel odometry, would remove the
+  per-scan assumption.
+- The constant-velocity guess is per scan too: uneven scan timing makes it wrong.
 - Tests do not show that the constant-velocity guess is needed: at 10 cm per
   scan, starting ICP from the previous pose works equally well.
 - Brute-force nearest neighbors over all map points; the map is noise-free.

@@ -502,6 +502,86 @@ int main() {
         check(jump.jump_rejected && jump.lost, "0.5 m jump rejected and flagged lost");
         check(std::hypot(jump.pose_in_map.x - 4, jump.pose_in_map.y - 3) < 0.005, "rejected jump keeps the prediction");
 
+        // A robot that starts turning in place at full rate (0.32 rad per scan, as
+        // in the sandbox) after driving straight. A 0.2 rad jump limit rejected
+        // the correct answers here forever; the limit must cover this.
+        {
+            MapLocalizer turning(hit_points, {2, 2.5, 0});
+            Pose2D p{2, 2.5, 0};
+            int turn_lost = 0;
+            double turn_worst = 0;
+            for (int k = 0; k < 20; ++k) {
+                const auto st = turning.update(rangesToPoints(simulateLidarRanges(with_box, p, lidar), lidar));
+                turn_lost += st.lost;
+                turn_worst = std::max(turn_worst, std::abs(std::remainder(st.pose_in_map.theta - p.theta, 2 * pi)));
+                if (k < 10) p.x += 0.06; else p.theta += 0.32;
+            }
+            check(turn_lost == 0 && turn_worst < 0.01, "sudden in-place turn: tracked, not rejected as a jump");
+        }
+
+        // The sandbox house (12 x 8 m, two rooms, furniture). The robot drives to
+        // the doorway, spins in place from 0.99 to -0.73 rad at 3.2 rad/s with a
+        // scan every 0.18 s, then leaves. Far walls make a 0.58 rad heading error
+        // push most points outside the pair gate, so ICP from the guess converges
+        // wrongly with a poor fit (about a third of the scan). The fit check
+        // rejects that, and the heading search recovers.
+        {
+            std::vector<Segment2D> house{{{0,0},{12,0}}, {{12,0},{12,8}}, {{12,8},{0,8}}, {{0,8},{0,0}},
+                                         {{6,0},{6,3}}, {{6,4.5},{6,8}}};
+            for (const auto& f : std::vector<std::vector<double>>{{0.5,4,0.8,2.2}, {3,4,1.2,0.7}, {3,7.75,2,0.4},
+                                                                  {11.1,4.25,1.6,2.1}, {8,7.6,1.6,0.6}, {8.5,0.45,1.4,0.6}}) {
+                const double x0 = f[0] - f[2] / 2, x1 = f[0] + f[2] / 2, y0 = f[1] - f[3] / 2, y1 = f[1] + f[3] / 2;
+                house.insert(house.end(), {{{x0,y0},{x1,y0}}, {{x1,y0},{x1,y1}}, {{x1,y1},{x0,y1}}, {{x0,y1},{x0,y0}}});
+            }
+            std::vector<Pose2D> stops;
+            for (const Point2D& p : std::vector<Point2D>{{1.5,1.5}, {4.5,1.5}, {6,3.75}, {8,2}, {10,2}, {10,6.5},
+                                                          {8,6.5}, {4.5,6.5}, {1.5,6.5}})
+                stops.push_back({p.x, p.y, 0});
+            const auto house_map = surveyMap(house, stops, {360, 20}, 0.05).occupiedPoints();
+            std::vector<Pose2D> route;
+            Pose2D p{5.4, 2.85, 0.99};
+            int phase = 0;
+            for (double t = 0; t < 4; t += 0.18) {
+                route.push_back(p);
+                if (phase == 0) {
+                    p.x += 0.108 * std::cos(p.theta); p.y += 0.108 * std::sin(p.theta);
+                    if (std::hypot(p.x - 6, p.y - 3.74) < 0.06) phase = 1;
+                } else if (phase == 1) {
+                    p.theta = std::max(-0.73, p.theta - 0.576);
+                    if (p.theta <= -0.73) phase = 2;
+                } else { p.x += 0.108 * std::cos(p.theta); p.y += 0.108 * std::sin(p.theta); }
+            }
+            const LidarConfig house_lidar{360, 8};
+            const auto runRoute = [&](const MapLocalizerOptions& o, int& recovered, int& poor) {
+                MapLocalizer loc(house_map, route.front(), o);
+                double worst = 0;
+                for (std::size_t k = 0; k < route.size(); ++k) {
+                    const auto st = loc.update(addGaussianNoise(
+                        rangesToPoints(simulateLidarRanges(house, route[k], house_lidar), house_lidar), 0.01, 300 + k));
+                    worst = std::max(worst, std::hypot(st.pose_in_map.x - route[k].x, st.pose_in_map.y - route[k].y));
+                    recovered += st.recovered;
+                    poor += st.poor_fit;
+                }
+                return worst;
+            };
+            int recovered = 0, poor = 0, unused = 0;
+            const double with_recovery = runRoute({}, recovered, poor);
+            MapLocalizerOptions no_recovery;
+            no_recovery.recovery_heading_range = 0;
+            no_recovery.min_inlier_fraction = 0;
+            const double without = runRoute(no_recovery, unused, unused);
+            check(poor > 0 && recovered > 0, "doorway spin: poor fit detected and recovered");
+            check(with_recovery < 0.05, "doorway spin: stays within 5 cm with fit check and recovery");
+            check(without > 0.5, "doorway spin: without them the estimate runs away");
+
+            // A start 1.5 m and 1 rad wrong: the result fits too little of the scan,
+            // so it is flagged lost instead of being accepted as the pose.
+            MapLocalizer bad_start(house_map, {route.front().x + 1.5, route.front().y, route.front().theta + 1});
+            const auto first_bad = bad_start.update(
+                rangesToPoints(simulateLidarRanges(house, route.front(), house_lidar), house_lidar));
+            check(first_bad.lost && first_bad.poor_fit, "badly wrong start: poor fit flagged, not accepted");
+        }
+
         rejects([&] { MapLocalizer m({{0, 0}, {1, 0}}, spot); }, "localizer map too small");
         rejects([&] { MapLocalizer m(hit_points, {0, std::nan(""), 0}); }, "localizer NaN pose");
 
@@ -572,6 +652,11 @@ int main() {
               "experiment: noise-free localizer within 1 cm");
         check(std::abs(report.localizer.final_error - report.localizer_errors.back()) < 1e-12,
               "experiment: final error is the last scan's");
+        const auto surveyed = surveyMap(config.walls, config.survey, {}, 0.05);
+        near(surveyed.origin().x, -0.5, "survey map: origin is the walls' corner minus the margin");
+        check(surveyed.columns() == 140 && surveyed.rows() == 100, "survey map: walls' box plus margins");
+        rejects([&] { surveyMap({}, config.survey, {}, 0.05); }, "survey map without walls");
+        rejects([&] { surveyMap(config.walls, {}, {}, 0.05); }, "survey map without poses");
         ExperimentConfig empty = config;
         empty.trajectory.clear();
         rejects([&] { runExperiment(empty); }, "experiment without trajectory");
