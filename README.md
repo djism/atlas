@@ -188,8 +188,8 @@ commits or schedule unattended pushes.
       (known failure: short sensor range)
 - [ ] **Phase 2:** interactive sandbox v1 — started: engine in the browser
       (WebAssembly), home-robot scenario with a live 3D lab, map localizer vs
-      tracker in the lab; remaining: planning from the estimated pose, URL state,
-      deployment, browser tests in CI
+      tracker in the lab, robot plans and steers from its estimate; remaining:
+      wheel odometry, URL state, deployment, browser tests in CI
 - [ ] **Phase 3:** 3D LiDAR odometry on KITTI, measured against a baseline (headline result)
 - [ ] **Phase 4:** distributed evaluation sweeps with leases, retries, idempotent results
 - [ ] **Phase 5:** replay explorer for real-data results

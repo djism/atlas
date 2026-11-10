@@ -62,6 +62,9 @@
   (gray), the map drawn as points, furniture editable, map-match metric.
 - Sandbox sensor now runs on simulated time (a scan every 0.1 s of simulated
   motion; the world waits if the engine is behind).
+- Sandbox robot plans and steers from its estimated pose (map estimate plus
+  commanded motion since the scan), with a simulated bumper and replanning;
+  one estimator pair per view in the worker.
 
 ## 0.1.0 — 2026-11-04
 

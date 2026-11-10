@@ -84,6 +84,8 @@ Goal: the first public, playable demo.
 - Visitor can move furniture, add obstacles, change sensor noise/range, and watch:
   scan rays, pairs, gated outliers, estimated vs true pose, residual/inlier charts,
   and an explicit "localization lost" state.
+- The robot plans and steers from its estimated pose, so bad localization
+  shows as bad driving (done 2026-11-10; planner still uses the true floor plan).
 - Deterministic seeds; shareable scenario state in the URL.
 - Static hosting with CI deploy; Playwright smoke test.
 

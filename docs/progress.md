@@ -341,6 +341,43 @@ surveyed at answer-key poses and never updated. Brute-force nearest neighbors.
 Plan from the estimated pose, or first simulate wheel odometry as the motion
 prediction so spins and sudden starts no longer depend on guessing.
 
+## 2026-11-10 — the sandbox robot plans and steers from its estimate
+
+### Implemented
+
+- The robot's belief is the latest map-localizer estimate composed with the
+  motion commanded since that scan was captured (perfect odometry for now).
+- The planner starts from the belief and the robot steers from it; commands
+  move the true robot. A simulated bumper stops it before a wall or box, counts
+  a bump, and triggers a replan from the belief.
+- One tracker/localizer pair per view in the worker (hero and lab no longer
+  share estimators). The robot waits ("Localizing") until its first estimate.
+
+### Lesson
+
+Before this, the planner used the answer-key pose, so localization had no
+consequences. Now a wrong estimate makes the robot drive wrongly, which is
+what "Get it lost" is meant to show.
+
+### Validation
+
+Browser: four 5-minute runs (normal, CPU 2x and 3x slower, two window sizes)
+with 0 bumps and 0 lost scans; planner tab with 3 dropped boxes replanned 9
+times with 0 bumps; at 1.5 m range the estimate was 5.8 m off and the robot
+bumped ("it was not where it thought"). Typecheck and production build pass.
+No browser checks run in CI yet.
+
+### Limitations
+
+The planner is given the true floor plan, not the robot's own map. Odometry
+is perfect. A badly lost robot keeps pushing after a bump (no back-up
+behavior). Short range still fails.
+
+### Next smallest step
+
+Simulated wheel odometry with slip and noise, used as the localizer's motion
+prediction instead of constant velocity.
+
 ### Daily checkpoint template
 
 - Concept understood:
