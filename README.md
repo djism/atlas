@@ -104,11 +104,14 @@ failed in every seed.
 
 ## Browser sandbox
 
+**Live: https://djism.github.io/atlas/** (published from `main` by CI).
+
 `web/` is an interactive site where the same C++ engine, compiled to WebAssembly,
 simulates the LiDAR, builds a map, localizes the robot against it, matches scans,
 and plans routes live in a Web Worker. In "Get it lost", the map localizer and the
 no-map tracker run side by side on the same scans, and visitors can move furniture
-so the house no longer matches the map. The world is simulated. See [sandbox](docs/sandbox.md) to build and run it.
+so the house no longer matches the map. The world is simulated. Every lab setup
+has a shareable link. See [sandbox](docs/sandbox.md) to build and run it.
 
 ## Project layout
 
@@ -189,8 +192,8 @@ commits or schedule unattended pushes.
 - [ ] **Phase 2:** interactive sandbox v1 — started: engine in the browser
       (WebAssembly), home-robot scenario with a live 3D lab, map localizer vs
       tracker in the lab, robot plans and steers from its estimate, simulated
-      wheel odometry as the localizer's guess; remaining: URL state,
-      deployment, browser tests in CI
+      wheel odometry as the localizer's guess, shareable links, deployed to
+      GitHub Pages; remaining: browser smoke test before publishing
 - [ ] **Phase 3:** 3D LiDAR odometry on KITTI, measured against a baseline (headline result)
 - [ ] **Phase 4:** distributed evaluation sweeps with leases, retries, idempotent results
 - [ ] **Phase 5:** replay explorer for real-data results
