@@ -1,0 +1,67 @@
+# Builds the web sandbox (C++ engine compiled to WebAssembly + React app) and
+# publishes it to GitHub Pages at https://djism.github.io/atlas/.
+# One-time setup: repository Settings > Pages > Source: "GitHub Actions".
+name: Sandbox site
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: pages
+  cancel-in-progress: false
+env:
+  EMSCRIPTEN_VERSION: 6.0.13 # same as the local build (see docs/sandbox.md)
+  EMSDK_COMMIT: d7b4130688bfa348392b921ab04015aa15c4f154 # emsdk tool, pinned
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24 # npm test runs TypeScript directly (Node 23.6+)
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Cache Emscripten
+        id: emsdk-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/emsdk
+          key: emsdk-${{ env.EMSDK_COMMIT }}-${{ env.EMSCRIPTEN_VERSION }}-${{ runner.os }}
+      - name: Install Emscripten
+        if: steps.emsdk-cache.outputs.cache-hit != 'true'
+        run: |
+          git clone https://github.com/emscripten-core/emsdk.git ~/emsdk
+          git -C ~/emsdk checkout "$EMSDK_COMMIT"
+          ~/emsdk/emsdk install "$EMSCRIPTEN_VERSION"
+          ~/emsdk/emsdk activate "$EMSCRIPTEN_VERSION"
+      - name: Install dependencies
+        working-directory: web
+        run: npm ci
+      - name: Build the engine (WebAssembly)
+        working-directory: web
+        run: npm run build:wasm
+      - name: Unit tests
+        working-directory: web
+        run: npm test
+      - name: Typecheck and build the site
+        working-directory: web
+        run: npx tsc --noEmit && npx vite build --base /atlas/
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: web/dist
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
