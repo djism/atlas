@@ -17,9 +17,25 @@ npm install          # project-local dependencies (web/node_modules, git-ignored
 npm run build:wasm   # C++ core + wasm/bindings.cpp -> web/src/engine/generated/
 npm run dev          # http://localhost:5173
 npm run build        # typecheck + production bundle in web/dist/
+npm test             # unit tests (Node's built-in runner; needs Node 23.6+ for .ts)
 ```
 
 Built with Emscripten 6.0.13; the engine is a single ~132 KB module.
+
+### Deploy (GitHub Pages)
+
+`.github/workflows/pages.yml` runs on every push to `main`: it installs
+Emscripten 6.0.13 (emsdk pinned to a commit, cached), compiles the engine from
+the committed C++, runs `npm test`, builds the site with `--base /atlas/`, and
+publishes `web/dist` to https://djism.github.io/atlas/. Build output stays out
+of Git. One-time setup: repository Settings > Pages > Source: "GitHub Actions".
+
+To check a production build locally under the same path:
+
+```bash
+cd web && npx vite build --base /atlas/ && npx vite preview --base /atlas/
+# http://localhost:4173/atlas/
+```
 Rendering uses Three.js 0.169.0 (project-local npm dependency, exact version).
 
 ## The page
@@ -99,6 +115,38 @@ Main thread (React + Three.js)               Web Worker (C++ via WASM)
 - **Scenario plugins.** A scenario (`web/src/scenarios/`) is data: walls,
   furniture (with heights for 3D), patrol points, robot, default sensor.
 
+## Shareable links
+
+The address bar always holds a link to the current lab setup; "Copy link"
+copies it. Example:
+
+```
+?lab=lost&range=1.5&noise=2&guess=last&room=sofa:1.20,3.50;box:3.20,4.10&mapped=#lab
+```
+
+| Parameter | Meaning |
+| --- | --- |
+| `lab` | Tab: `match`, `lost`, `plan`. Without it, the link is ignored. |
+| `range`, `noise` | Sensor range (m) and noise (cm), "Get it lost" only; snapped to the sliders |
+| `guess=last` | Blue ring repeats its last motion instead of using wheel odometry |
+| `room` | Furniture now: `id:x,y` for each piece moved from its default spot, `box:x,y` per dropped box (world frame, meters, centers) |
+| `mapped` | Furniture when the map was surveyed, same format; omitted when equal to `room`. Empty means the original house. |
+
+`mapped` exists because the experiment is "map the house, then change it":
+without it, opening the link would survey the changed house and the mismatch
+would vanish. Measured: the same moved furniture gave 51 % map match ("House
+differs from the map") with `mapped=` and 89 % without it.
+
+Defaults are left out; unknown ids, malformed values, and points outside the
+house are skipped. Updates use `history.replaceState` (no back-button
+entries). Codec: `web/src/lib/share.ts`, tests in `web/tests/share.test.ts`.
+
+A link reproduces the **setup**, not the exact run: the robot restarts at its
+first patrol point, and scan, plan, and frame timing still depend on the
+machine. Seeds are fixed per scan, but results arrive asynchronously, so two
+runs of the same link can differ (a deterministic replay would need the
+simulation to wait for each engine result).
+
 ## ICP verdicts shown to visitors
 
 | Chip | Meaning |
@@ -155,6 +203,8 @@ against a map are the fixes.
 - After a bump against a wall it cannot see past, a badly lost robot keeps
   pushing and replanning; there is no recovery behavior.
 - One scenario (home). Street-car and warehouse scenarios are planned.
-- Not yet deployed; no browser tests in CI (CI builds and tests the C++ only).
+- No browser tests in CI yet: the Pages workflow builds the engine and site
+  and runs the link codec's unit tests; nothing loads the page before it is
+  published.
 - Bundle is ~690 KB (~190 KB gzip), mostly Three.js; not yet code-split.
 - Isotropic point noise, not along-beam range noise.

@@ -88,6 +88,8 @@ Goal: the first public, playable demo.
   shows as bad driving (done 2026-11-10; planner still uses the true floor plan).
 - Simulated wheel odometry as the localizer's motion prediction, with a
   constant-velocity comparison switch (done 2026-11-10).
+- Shareable setup links and GitHub Pages deployment from CI (done 2026-11-10);
+  remaining: a browser smoke test before publishing.
 - Deterministic seeds; shareable scenario state in the URL.
 - Static hosting with CI deploy; Playwright smoke test.
 

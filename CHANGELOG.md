@@ -77,6 +77,11 @@
   feeds simulated wheel odometry to the map localizer; "Get it lost" can
   switch to constant velocity for comparison. Lab panel no longer overflows
   the stage on short windows.
+- Sandbox: shareable links. The address bar holds the lab setup (tab, sensor,
+  motion guess, furniture now and when the map was surveyed); "Copy link".
+  Codec in `web/src/lib/share.ts` with unit tests (`npm test`, Node's runner).
+- Added `.github/workflows/pages.yml`: builds the engine with pinned
+  Emscripten 6.0.13 and publishes the sandbox to GitHub Pages.
 
 ## 0.1.0 — 2026-11-04
 

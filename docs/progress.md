@@ -425,6 +425,43 @@ constant velocity. Short range is only as good as the wheels.
 URL state for the sandbox, then deployment and a browser smoke test in CI;
 then Phase 3 (KITTI).
 
+## 2026-11-10 (session 3) — shareable links and GitHub Pages deployment
+
+### Implemented
+
+- Shareable lab links: `?lab=lost&range=1.5&guess=last&room=sofa:1.20,3.50;box:3.20,4.10&mapped=`.
+  `room` is the furniture now, `mapped` the furniture when the map was
+  surveyed; the Field snapshots the house at each restart and `loadLayout()`
+  surveys from `mapped`, then arranges `room`. "Copy link" button; the address
+  bar follows changes via `history.replaceState`.
+- Pages workflow: pinned emsdk commit and Emscripten 6.0.13 (cached), engine
+  built from committed C++, `npm test`, `vite build --base /atlas/`, deploy.
+
+### Lesson
+
+A link must carry what makes the experiment, not just what is on screen: the
+same moved furniture gave 51 % map match with `mapped` and 89 % without, so a
+single layout would have silently changed the result. Without WebGL the page
+first erased a shared layout from the URL (no Field to read it from); fixed.
+
+### Validation
+
+9 codec unit tests (round trips, defaults omitted, hand-edited and garbage
+links, percent-encoded links); a mutation of the `mapped` default is caught.
+Browser: six links set the right tab, sliders, guess, and furniture; bad
+links are cleaned; Copy link writes the URL. Production build served under
+`/atlas/` locally passes the same checks; a clean copy of the tree runs every
+workflow step. 0 console errors.
+
+### Limitations
+
+A link reproduces the setup, not the exact run (asynchronous engine results
+and machine timing). No browser test runs before publishing.
+
+### Next smallest step
+
+Browser smoke test in the Pages workflow, gating deployment; then Phase 3.
+
 ### Daily checkpoint template
 
 - Concept understood:
