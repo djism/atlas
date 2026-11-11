@@ -84,7 +84,10 @@ export class IcpDemo {
     const run = this.run;
     if (this.dragging || !run) return { pose: this.guess, pass: 0, passes: 0, pairs: null, done: false };
     const passes = run.poses.length - 1;
-    const t = now - this.playStart;
+    // `now` is a frame timestamp (start of the frame); playStart is set when the
+    // engine's answer arrives, which on a slow frame is AFTER that start. Never
+    // let elapsed time go negative (pass -1 would index past the start).
+    const t = Math.max(0, now - this.playStart);
     const k = Math.floor(t / PASS_MS);
     if (k >= passes) {
       if (this.auto && t > passes * PASS_MS + HOLD_MS) this.playStart = now;
