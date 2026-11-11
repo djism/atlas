@@ -26,6 +26,12 @@ Pose2D composePoses(const Pose2D& b_in_a, const Pose2D& c_in_b) {
     return {origin.x, origin.y, std::atan2(std::sin(theta), std::cos(theta))};
 }
 
+Pose2D relativePose(const Pose2D& b_in_a, const Pose2D& c_in_a) {
+    const Point2D origin = inverseTransformPoint({c_in_a.x, c_in_a.y}, b_in_a);
+    const double theta = c_in_a.theta - b_in_a.theta;
+    return {origin.x, origin.y, std::atan2(std::sin(theta), std::cos(theta))};
+}
+
 Point2D computeCentroid(const std::vector<Point2D>& points) {
     if (points.empty()) {
         throw std::invalid_argument(

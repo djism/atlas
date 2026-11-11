@@ -1,6 +1,7 @@
 // Scripted localization experiment: scan-to-scan tracker vs scan-to-map
-// localizer over fixed trajectories, sensor ranges, noise levels, and seeds.
-// Usage: atlas_experiment [--seeds N] [--csv path]
+// localizer over fixed trajectories, sensor ranges, noise levels, and seeds;
+// then the localizer's motion prediction: constant velocity vs wheel odometry.
+// Usage: atlas_experiment [--seeds N] [--csv path] [--odometry-scale X]
 // Setup and printing only; the run loop is runExperiment() in src/experiment.cpp.
 #include "atlas/experiment.hpp"
 #include <algorithm>
@@ -32,11 +33,16 @@ constexpr double kFailure = 0.10;  // meters
 int main(int argc, char** argv) {
     using namespace atlas;
     int seeds = 3;
+    double odometry_scale = 1.0;
     std::string csv_path;
     for (int i = 1; i < argc; ++i) {
         if (!std::strcmp(argv[i], "--seeds") && i + 1 < argc) seeds = std::max(1, std::atoi(argv[++i]));
         else if (!std::strcmp(argv[i], "--csv") && i + 1 < argc) csv_path = argv[++i];
-        else { std::cerr << "usage: atlas_experiment [--seeds N] [--csv path]\n"; return EXIT_FAILURE; }
+        else if (!std::strcmp(argv[i], "--odometry-scale") && i + 1 < argc) odometry_scale = std::atof(argv[++i]);
+        else {
+            std::cerr << "usage: atlas_experiment [--seeds N] [--csv path] [--odometry-scale X]\n";
+            return EXIT_FAILURE;
+        }
     }
 
     // Scenario: 8 x 6 m room with an alcove and a 1 m box (world frame, meters).
@@ -45,6 +51,10 @@ int main(int argc, char** argv) {
                   {{8,4},{8,6}}, {{8,6},{0,6}}, {{0,6},{0,0}},
                   {{2,4},{3,4}}, {{3,4},{3,5}}, {{3,5},{2,5}}, {{2,5},{2,4}}};
     base.survey = {{1.5,1.5,0}, {4,1.5,0.5}, {6.5,1.5,1}, {8.7,3,2}, {6.5,4.5,2.5}, {4,3,3}, {1.2,4.8,-1}};
+    // Assumed wheel odometry (not measured on a real robot): wheels over-report
+    // distance by 2 %; random 5 % of distance and of each turn; 0.02 rad of
+    // heading error per meter. --odometry-scale multiplies all four.
+    base.odometry = {0.02 * odometry_scale, 0.05 * odometry_scale, 0.05 * odometry_scale, 0.02 * odometry_scale};
     const std::vector<Path> paths{{"A", {4.6, 2.6}, 1.8}, {"B", {4.5, 2.8}, 1.5}};
     const std::vector<double> ranges{10.0, 3.0};
     const std::vector<double> noises{0.01, 0.03};
@@ -53,7 +63,7 @@ int main(int argc, char** argv) {
     if (!csv_path.empty()) {
         csv.open(csv_path);
         if (!csv) fileError("cannot write " + csv_path);
-        csv << "path,range_m,noise_m,seed,method,worst_m,mean_m,final_m,lost,weak,jumps,scans,driven_m\n";
+        csv << "table,path,range_m,noise_m,seed,method,worst_m,mean_m,final_m,lost,weak,jumps,scans,driven_m\n";
     }
 
     std::printf("Atlas localization experiment: 2 laps per run, 10 cm per scan, 360 beams,\n"
@@ -85,7 +95,7 @@ int main(int argc, char** argv) {
                     if (csv) {
                         for (int m = 0; m < 2; ++m) {
                             const MethodReport& mr = m ? r.localizer : r.tracker;
-                            csv << path.name << ',' << range << ',' << noise << ',' << config.seed << ','
+                            csv << "estimators," << path.name << ',' << range << ',' << noise << ',' << config.seed << ','
                                 << (m ? "localizer" : "tracker") << ',' << mr.worst_error << ','
                                 << mr.mean_error << ',' << mr.final_error << ',' << mr.lost << ','
                                 << (m ? r.localizer_weak : 0) << ',' << (m ? r.localizer_jumps : 0) << ','
@@ -102,6 +112,61 @@ int main(int argc, char** argv) {
     std::printf("\nTracker drift = final error / distance driven (worst seed). Lost, weak, jumps:\n"
                 "localizer scans summed over seeds (lost: failed or rejected; weak: position along\n"
                 "one direction taken from the prediction; jumps: answer too far from the guess).\n");
+
+    // Second table: the same localizer with two motion predictions. "S" stops at
+    // each corner of a loop and turns in place at 0.6 rad per scan, then drives.
+    const std::vector<Point2D> corners{{1.5,1.5}, {6.5,1.5}, {6.5,4.5}, {4,4.5}, {1.5,3}, {1.5,1.5},
+                                       {6.5,1.5}, {6.5,4.5}, {4,4.5}, {1.5,3}, {1.5,1.5}};
+    std::printf("\nMotion prediction for the localizer, 1 cm scan noise, %d seed(s) per row.\n"
+                "Odometry noise x%.2g: bias %.0f%%, distance %.0f%%, turn %.0f%%, %.3f rad/m.\n"
+                "A, B: the circles above. S: stop at corners, turn in place 0.6 rad/scan, drive.\n\n",
+                seeds, odometry_scale, 100 * base.odometry.translation_bias,
+                100 * base.odometry.translation_fraction, 100 * base.odometry.rotation_fraction,
+                base.odometry.rotation_per_meter);
+    std::printf("%-4s %6s | %-10s | %-22s | %5s %6s | %-16s\n", "path", "range", "guess",
+                "localizer worst / mean", "lost", "failed", "odometry alone");
+    for (const char* name : {"A", "B", "S"})
+        for (double range : ranges)
+            for (int use_odometry = 0; use_odometry < 2; ++use_odometry) {
+                double worst = 0, mean = 0, alone = 0;
+                std::size_t lost = 0;
+                int failed = 0;
+                for (int s = 0; s < seeds; ++s) {
+                    ExperimentConfig config = base;
+                    if (name[0] == 'S') config.trajectory = waypointPath(corners, 0.1, 0.6);
+                    else {
+                        const Path& path = paths[name[0] == 'A' ? 0 : 1];
+                        config.trajectory = circlePath(path.center, path.radius, 0.1, 2);
+                    }
+                    config.lidar = {360, range};
+                    config.seed = 1000 * (s + 1);
+                    config.localizer_uses_odometry = use_odometry;
+                    const ExperimentReport r = runExperiment(config);
+                    worst = std::max(worst, r.localizer.worst_error);
+                    mean += r.localizer.mean_error / seeds;
+                    alone = std::max(alone, r.odometry.worst_error);
+                    lost += r.localizer.lost;
+                    failed += r.localizer.worst_error > kFailure;
+                    if (csv) {
+                        for (int m = 0; m < 2; ++m) {
+                            const MethodReport& mr = m ? r.odometry : r.localizer;
+                            csv << "prediction," << name << ',' << range << ',' << config.noise << ','
+                                << config.seed << ','
+                                << (m ? "odometry_alone" : use_odometry ? "localizer_odometry" : "localizer_cv")
+                                << ',' << mr.worst_error << ',' << mr.mean_error << ',' << mr.final_error << ','
+                                << mr.lost << ',' << (m ? 0 : r.localizer_weak) << ','
+                                << (m ? 0 : r.localizer_jumps) << ',' << r.scans << ',' << r.driven << '\n';
+                        }
+                    }
+                }
+                char localizer_text[32], alone_text[24];
+                std::snprintf(localizer_text, sizeof localizer_text, "%7.3f m / %7.4f m", worst, mean);
+                std::snprintf(alone_text, sizeof alone_text, "%6.3f m worst", alone);
+                std::printf("%-4s %4.0f m | %-10s | %-22s | %5zu %3d/%d | %-16s\n", name, range,
+                            use_odometry ? "odometry" : "const vel", localizer_text, lost, failed, seeds,
+                            alone_text);
+            }
+    std::printf("\nOdometry alone = the odometry readings chained with no scans (dead reckoning).\n");
     if (csv) std::printf("Per-run rows written to %s\n", csv_path.c_str());
     return EXIT_SUCCESS;
 }

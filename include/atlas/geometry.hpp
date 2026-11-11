@@ -9,13 +9,18 @@ Point2D transformPoint(const Point2D& point, const Pose2D& source_in_destination
 // destination -> source: R(theta)^T * (point - translation).
 Point2D inverseTransformPoint(const Point2D& point, const Pose2D& source_in_destination);
 
-// Mean of a nonempty point set, in the same frame as the inputs.
-// Throws std::invalid_argument for an empty set.
 // Chains frames: given frame B in frame A and frame C in frame B, returns
 // frame C in frame A. Translation: R(a.theta) * c.xy + a.xy; heading: a.theta + c.theta
 // (wrapped to (-pi, pi]).
 Pose2D composePoses(const Pose2D& b_in_a, const Pose2D& c_in_b);
 
+// The reverse of composePoses: given frames B and C both in frame A, returns
+// frame C in frame B (the motion that takes pose b to pose c). Heading wrapped
+// to (-pi, pi]. composePoses(b, relativePose(b, c)) equals c.
+Pose2D relativePose(const Pose2D& b_in_a, const Pose2D& c_in_a);
+
+// Mean of a nonempty point set, in the same frame as the inputs.
+// Throws std::invalid_argument for an empty set.
 Point2D computeCentroid(const std::vector<Point2D>& points);
 
 struct NormalEstimate {

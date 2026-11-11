@@ -20,6 +20,29 @@ std::vector<Point2D> simulateScan(const std::vector<Point2D>& landmarks,
 std::vector<Point2D> addGaussianNoise(const std::vector<Point2D>& points,
                                       double stddev, std::uint64_t seed);
 
+// Simulated wheel odometry: what wheel encoders report for one step of true
+// motion. Both motions are the sensor frame after the step expressed in the
+// frame before it (meters, radians). Simplified from the standard odometry
+// motion model (Thrun, Burgard, Fox, "Probabilistic Robotics", ch. 5): each
+// standard deviation is proportional to the step, so errors are per step and
+// grow with distance driven and angle turned. All values are assumptions, not
+// measurements of a real robot.
+struct OdometryNoise {
+    // Systematic distance error: reported = true * (1 + bias). -0.02 means the
+    // wheels report 2 % less than the robot moved (e.g. wrong wheel radius).
+    double translation_bias = 0.0;
+    double translation_fraction = 0.0;  // random distance error: stddev / distance
+    double rotation_fraction = 0.0;     // random turn error: stddev / angle turned
+    double rotation_per_meter = 0.0;    // heading error from driving: radians stddev per meter
+};
+
+// Reported motion = true translation scaled by (1 + bias + translation_fraction * n1),
+// heading = true + rotation_fraction * |turn| * n2 + rotation_per_meter * distance * n3,
+// with n1..n3 standard Gaussians from `seed` (same generator as addGaussianNoise).
+// Zero noise returns the true motion. Throws std::invalid_argument for a
+// nonfinite motion or noise, or negative standard deviations.
+Pose2D simulateOdometry(const Pose2D& true_motion, const OdometryNoise& noise, std::uint64_t seed);
+
 // Planar spinning LiDAR. Beam i points at angle i * 2*pi / beam_count in sensor
 // axes (beam 0 = +x forward, counterclockwise).
 struct LidarConfig {

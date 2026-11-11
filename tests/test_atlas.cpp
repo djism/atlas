@@ -203,6 +203,51 @@ int main() {
         near(identity.y, 0, "compose with inverse y");
         near(identity.theta, 0, "compose with inverse heading");
         near(composePoses({0, 0, 3}, {0, 0, 0.5}).theta, 3.5 - 2 * pi, "compose wraps heading");
+
+        // relativePose undoes composePoses: the motion from b to c, in b's axes.
+        // b at (1,0) facing 90 deg; c at (1,1) facing 90 deg is 1 m straight ahead.
+        const auto ahead = relativePose({1, 0, pi / 2}, {1, 1, pi / 2});
+        near(ahead.x, 1, "relative pose: forward");
+        near(ahead.y, 0, "relative pose: no sideways");
+        near(ahead.theta, 0, "relative pose: no turn");
+        const Pose2D b{2, -3, 2.5}, cc{-1, 4, -2.9};
+        const auto round_trip = composePoses(b, relativePose(b, cc));
+        check(std::hypot(round_trip.x - cc.x, round_trip.y - cc.y) < 1e-12 &&
+              std::abs(std::remainder(round_trip.theta - cc.theta, 2 * pi)) < 1e-12,
+              "compose(b, relative(b, c)) == c");
+        near(relativePose({0, 0, 3}, {0, 0, -3}).theta, 2 * pi - 6, "relative pose wraps heading");
+    }
+    // ---- Simulated wheel odometry ----
+    {
+        const Pose2D move{0.1, 0.02, 0.3};
+        const auto exact = simulateOdometry(move, {}, 5);
+        check(exact.x == move.x && exact.y == move.y && std::abs(exact.theta - move.theta) < 1e-15,
+              "odometry without noise reports the true motion");
+        OdometryNoise slip;
+        slip.translation_bias = -0.1;
+        const auto short_wheels = simulateOdometry(move, slip, 5);
+        near(short_wheels.x, 0.09, "odometry bias scales distance (x)");
+        near(short_wheels.y, 0.018, "odometry bias scales distance (y)");
+        OdometryNoise noisy{0.02, 0.05, 0.05, 0.02};
+        const auto a = simulateOdometry(move, noisy, 9), b = simulateOdometry(move, noisy, 9);
+        check(a.x == b.x && a.theta == b.theta, "odometry: same seed, same reading");
+        check(simulateOdometry(move, noisy, 10).x != a.x, "odometry: different seed, different reading");
+        // Heading error from driving: stddev = rotation_per_meter * distance.
+        OdometryNoise drift;
+        drift.rotation_per_meter = 0.1;
+        double sum_sq = 0;
+        const int trials = 4000;
+        for (int k = 0; k < trials; ++k) {
+            const double e = simulateOdometry({1, 0, 0}, drift, 100 + k).theta;
+            sum_sq += e * e;
+        }
+        check(std::abs(std::sqrt(sum_sq / trials) - 0.1) < 0.005, "odometry heading drift: 0.1 rad per meter");
+        // Turning in place: no distance, so no translation or distance-driven error.
+        const auto spin = simulateOdometry({0, 0, 0.5}, drift, 3);
+        check(spin.x == 0 && spin.y == 0 && std::abs(spin.theta - 0.5) < 1e-15,
+              "odometry: in-place turn has no driving error");
+        rejects([] { simulateOdometry({std::nan(""), 0, 0}, {}, 1); }, "odometry NaN motion");
+        rejects([] { simulateOdometry({0, 0, 0}, {0, -0.1, 0, 0}, 1); }, "odometry negative stddev");
     }
     // ---- Normals: local line fits ----
     {
@@ -584,6 +629,17 @@ int main() {
 
         rejects([&] { MapLocalizer m({{0, 0}, {1, 0}}, spot); }, "localizer map too small");
         rejects([&] { MapLocalizer m(hit_points, {0, std::nan(""), 0}); }, "localizer NaN pose");
+        {
+            // The motion overload: the guess is the previous pose moved by the given
+            // motion. Exact motion of the 0.5 m jump above is no longer a jump.
+            MapLocalizer told(hit_points, spot);
+            told.update(rangesToPoints(simulateLidarRanges(with_box, spot, lidar), lidar), {0, 0, 0});
+            const auto moved = told.update(
+                rangesToPoints(simulateLidarRanges(with_box, {4.5, 3, 0}, lidar), lidar), {0.5, 0, 0});
+            check(!moved.lost && std::hypot(moved.pose_in_map.x - 4.5, moved.pose_in_map.y - 3) < 0.005,
+                  "localizer with measured motion: 0.5 m move accepted");
+            rejects([&] { told.update({}, {0, std::nan(""), 0}); }, "localizer NaN motion");
+        }
 
         // ---- Degeneracy: a 3 m sensor sometimes sees only parallel walls ----
         // Circle of 1.8 m around (4.6, 2.6), 1 cm noise. Near k = 66 the scan holds
@@ -660,6 +716,40 @@ int main() {
         ExperimentConfig empty = config;
         empty.trajectory.clear();
         rejects([&] { runExperiment(empty); }, "experiment without trajectory");
+        check(report.odometry.worst_error < 1e-9, "experiment: noise-free odometry alone is exact");
+
+        // Waypoint path: 1 m east, stop, turn in place to face north (pi/2 at
+        // 0.6 rad per scan: 0.6, 1.2, pi/2), then 0.25 m north.
+        const auto corner = waypointPath({{0, 0}, {1, 0}, {1, 0.25}}, 0.1, 0.6);
+        check(corner.size() == 1 + 10 + 3 + 3, "waypoint path: start, 10 steps, 3 turns, 3 steps");
+        near(corner[11].theta, 0.6, "waypoint path: first turn step is capped");
+        near(corner[13].theta, pi / 2, "waypoint path: turn ends facing the next waypoint");
+        check(corner[11].x == corner[10].x && corner[11].y == corner[10].y, "waypoint path: turns in place");
+        near(corner.back().y, 0.25, "waypoint path: ends at the last waypoint");
+        near(corner.back().y - corner[corner.size() - 2].y, 0.05, "waypoint path: last step is shorter");
+        rejects([] { waypointPath({{0, 0}}, 0.1, 0.5); }, "waypoint path needs two waypoints");
+
+        // A robot stops, then turns in place at 0.6 rad per scan. Constant velocity
+        // predicts no turn; ICP from that guess can settle on a wrong pose that
+        // still passes the fit and jump checks (measured: 18 of 20 seeds above
+        // 5 cm). Wheel odometry predicts the turn, so ICP starts near the answer.
+        ExperimentConfig turn;
+        turn.walls = {{{0,0},{8,0}}, {{8,0},{8,2}}, {{8,2},{9.5,2}}, {{9.5,2},{9.5,4}}, {{9.5,4},{8,4}},
+                      {{8,4},{8,6}}, {{8,6},{0,6}}, {{0,6},{0,0}},
+                      {{2,4},{3,4}}, {{3,4},{3,5}}, {{3,5},{2,5}}, {{2,5},{2,4}}};
+        turn.survey = {{1.5,1.5,0}, {4,1.5,0.5}, {6.5,1.5,1}, {8.7,3,2}, {6.5,4.5,2.5}, {4,3,3}, {1.2,4.8,-1}};
+        turn.trajectory = waypointPath({{3, 3.8}, {1.5, 3}, {1.5, 1.5}}, 0.1, 0.6);
+        turn.odometry = {0.02, 0.05, 0.05, 0.02};
+        double cv_best = 1e9, odometry_worst = 0;
+        for (std::uint64_t seed : {1, 2, 3}) {
+            turn.seed = seed;
+            turn.localizer_uses_odometry = false;
+            cv_best = std::min(cv_best, runExperiment(turn).localizer.worst_error);
+            turn.localizer_uses_odometry = true;
+            odometry_worst = std::max(odometry_worst, runExperiment(turn).localizer.worst_error);
+        }
+        check(cv_best > 0.05, "sudden turn from standstill: constant velocity accepts a wrong pose");
+        check(odometry_worst < 0.01, "sudden turn from standstill: odometry guess stays within 1 cm");
     }
     // ---- Translation observability of line constraints ----
     {

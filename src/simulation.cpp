@@ -50,6 +50,24 @@ std::vector<Point2D> addGaussianNoise(const std::vector<Point2D>& points,
     return noisy;
 }
 
+Pose2D simulateOdometry(const Pose2D& true_motion, const OdometryNoise& noise, std::uint64_t seed) {
+    if (!std::isfinite(true_motion.x) || !std::isfinite(true_motion.y) || !std::isfinite(true_motion.theta))
+        throw std::invalid_argument("odometry motion must be finite");
+    if (!std::isfinite(noise.translation_bias) || !(noise.translation_fraction >= 0) ||
+        !(noise.rotation_fraction >= 0) || !(noise.rotation_per_meter >= 0) ||
+        !std::isfinite(noise.translation_fraction + noise.rotation_fraction + noise.rotation_per_meter))
+        throw std::invalid_argument("odometry noise must be finite, standard deviations nonnegative");
+    std::mt19937_64 generator(seed);
+    const double n1 = standardGaussian(generator);
+    const double n2 = standardGaussian(generator);
+    const double n3 = standardGaussian(generator);
+    const double distance = std::hypot(true_motion.x, true_motion.y);
+    const double scale = 1.0 + noise.translation_bias + noise.translation_fraction * n1;
+    const double theta = true_motion.theta + noise.rotation_fraction * std::abs(true_motion.theta) * n2 +
+                         noise.rotation_per_meter * distance * n3;
+    return {true_motion.x * scale, true_motion.y * scale, std::atan2(std::sin(theta), std::cos(theta))};
+}
+
 namespace {
 double cross(const Point2D& v, const Point2D& w) { return v.x * w.y - v.y * w.x; }
 

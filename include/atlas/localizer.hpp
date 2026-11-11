@@ -67,12 +67,13 @@ struct LocalizerStep {
 // is registered against fixed map points (e.g. OccupancyMap::occupiedCenters()),
 // in map coordinates. Because the reference is the map, ICP returns the sensor
 // pose IN THE MAP directly: errors do not chain from scan to scan.
-// The guess is the previous estimate moved by the previous motion (constant
-// velocity). Needs the initial pose; it does not find itself from nowhere. On
-// failure, a poor fit, or a result too far from the guess, the localizer first
-// searches headings around the guess (recovery); if that also fails, the step
-// is marked lost and the pose is predicted. The first scan skips the jump
-// check (no velocity yet).
+// The guess is the previous estimate moved by either the previous motion
+// (constant velocity) or a measured motion such as wheel odometry. Needs the
+// initial pose; it does not find itself from nowhere. On failure, a poor fit,
+// or a result too far from the guess, the localizer first searches headings
+// around the guess (recovery); if that also fails, the step is marked lost and
+// the pose is predicted. The first scan skips the jump check (the initial pose
+// may be off by more than the limits).
 // "Converged" still means stable, not correct: in a view of parallel walls ICP
 // can slide along them with no rise in residual. So when the scan's weakest
 // translation direction is too weak, the position along it is taken from the
@@ -84,11 +85,20 @@ public:
     MapLocalizer(std::vector<Point2D> map_points, const Pose2D& initial_pose_in_map,
                  MapLocalizerOptions options = {});
 
+    // Prediction by constant velocity: the guess repeats the previous motion.
     LocalizerStep update(const std::vector<Point2D>& scan);
+    // Prediction by measured motion (e.g. wheel odometry): the guess is the
+    // previous pose moved by `motion`, the sensor frame at this scan expressed
+    // in the sensor frame at the previous scan (at the initial pose, for the
+    // first scan; pass {0, 0, 0} if the robot has not moved). The jump check
+    // and recovery then judge the scan against this guess. Throws
+    // std::invalid_argument for a nonfinite motion.
+    LocalizerStep update(const std::vector<Point2D>& scan, const Pose2D& motion);
     const Pose2D& pose() const { return pose_; }
     std::size_t scansProcessed() const { return scans_; }
 
 private:
+    LocalizerStep registerScan(const std::vector<Point2D>& scan, const Pose2D& guess);
     bool attempt(const std::vector<Point2D>& scan, const Pose2D& start, const Pose2D& guess,
                  LocalizerStep& step, Pose2D& measured) const;
 

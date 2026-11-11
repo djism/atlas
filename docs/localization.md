@@ -192,6 +192,61 @@ quietly lowered the sensor rate, at times below 2 Hz. The sandbox now captures
 a scan every 0.1 s of simulated time and pauses the simulated world if the
 engine falls more than two scans behind (see [sandbox](sandbox.md)).
 
+## Motion prediction: constant velocity vs wheel odometry
+
+Each scan, ICP starts from a guess. Until now the guess was **constant
+velocity**: "the robot will move like it did last scan". That guess is made
+from the localizer's own previous answers. Real robots also count wheel turns
+(odometry): an independent, noisy measurement of how far they moved and turned.
+
+`simulateOdometry()` reports one step of true motion with assumed errors (not
+measured on a real robot): wheels over-report distance by 2 %, random 5 % of
+the distance and of each turn, and 0.02 rad of heading error per meter driven.
+`MapLocalizer::update(scan, motion)` uses it: guess = previous pose moved by
+the reported motion (the sensor frame at this scan, in the frame at the
+previous scan). The jump check and recovery are unchanged; they now judge the
+scan against the odometry guess.
+
+Two failure patterns of constant velocity, both found by measuring:
+
+1. **Sudden start of a turn.** A robot stops, then turns in place at 0.6 rad
+   per scan. Constant velocity predicts no turn. ICP from that guess settled on
+   a pose 13 cm and 0.24 rad wrong with 59 % of the scan matching: above the
+   50 % fit threshold and inside both jump limits, so it was accepted. On a
+   35-scan path through one such corner, constant velocity was worse than 5 cm
+   in 18 of 20 seeds (two above 1 m); odometry was within 3 mm in 20 of 20.
+2. **Feedback.** A wrong answer becomes the next velocity, so the next guess is
+   wrong too. With a 3 m sensor, where many scans are lost or weak, this ran
+   away on every circle run. Odometry does not depend on past answers, so one
+   bad scan does not poison the next guess.
+
+`atlas_experiment --seeds 5`, second table (1 cm scan noise, 5 seeds; "failed"
+= worst error above 10 cm; S stops at each corner of a two-lap loop and turns
+in place at 0.6 rad per scan):
+
+| Path, range | Constant velocity worst (failed) | Odometry worst (failed) | Odometry alone |
+| --- | --- | --- | --- |
+| A circle, 10 m | 3 mm (0/5) | 3 mm (0/5) | 20 cm |
+| A circle, 3 m | 16 cm (5/5) | 7.3 cm (0/5) | 20 cm |
+| B circle, 3 m | 9.6 m (5/5) | 7.0 cm (0/5) | 19 cm |
+| S stop-and-go, 10 m | 10.1 m (5/5) | 3 mm (0/5) | 90 cm |
+| S stop-and-go, 3 m | 15 cm (3/5) | 9.2 cm (0/5) | 90 cm |
+
+"Odometry alone" chains the readings with no scans (dead reckoning): it drifts
+without bound, so wheels do not replace the map. Each one covers the other's
+weakness: odometry gives a guess that cannot run away; the map removes drift.
+
+How much this depends on the assumed wheel quality (`--odometry-scale`):
+
+- 3x worse odometry: 10 m rows unchanged (3 mm). 3 m rows fail again (A 3/5,
+  B 4/5, S 5/5) at 20 to 28 cm, not meters.
+- 10x worse: 10 m circles still 3 to 4 mm; S at 10 m reaches 9.9 cm, just
+  under the failure line. 3 m rows fail by meters.
+
+So with the 3 m sensor, the localizer is mostly coasting on odometry between
+the few scans that see enough walls; the result is only as good as the wheels.
+Short range is not solved; it stops running away when odometry is decent.
+
 ## Limits
 
 - Needs a good initial pose. Recovery searches heading only, around the
@@ -201,15 +256,20 @@ engine falls more than two scans behind (see [sandbox](sandbox.md)).
   room most scans had no points at all.
 - Only translation observability is analyzed. A view that leaves rotation
   unconstrained (e.g. a round room) is not detected; a full 3x3 analysis would.
-- Along a weak direction the pose is dead reckoning from constant velocity.
+- Along a weak direction, and on lost scans, the pose is the prediction
+  (constant velocity or odometry), i.e. dead reckoning.
 - The jump check assumes motion between scans is predictable within 0.3 m and
   0.5 rad, per scan, so it depends on the scan rate. The limits started at
   15 cm and 0.2 rad; both rejected correct answers in the sandbox (a sudden
-  in-place turn, a sudden start). A time-aware motion model (speeds per second
-  times the actual time between scans), or wheel odometry, would remove the
-  per-scan assumption.
-- The constant-velocity guess is per scan too: uneven scan timing makes it wrong.
-- Tests do not show that the constant-velocity guess is needed: at 10 cm per
-  scan, starting ICP from the previous pose works equally well.
+  in-place turn, a sudden start). With odometry the limits could be much
+  tighter (they bound the odometry error, not the motion); not yet tuned.
+- The constant-velocity guess is per scan: uneven scan timing makes it wrong.
+  Odometry is timing-independent (it reports what happened between scans).
+- The odometry model is simplified and its noise values are assumptions. It
+  has no wheel slip events (e.g. a bump), and its errors are independent per
+  step. Odometry and scans are assumed to be captured at the same instants.
+- The localizer does not weight odometry against the scan: it is only the
+  starting guess (and the answer when a scan is rejected). A filter (e.g. an
+  extended Kalman filter) would combine both by their uncertainties.
 - Brute-force nearest neighbors over all map points; the map is noise-free.
-- Test suite: about 2.6 s optimized, 14 s unoptimized, mostly these laps.
+- Test suite: about 5 s optimized, mostly these laps and the sudden-turn runs.

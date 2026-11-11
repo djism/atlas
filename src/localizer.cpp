@@ -7,14 +7,6 @@
 #include <utility>
 
 namespace atlas {
-namespace {
-// Pose b expressed in pose a's frame: the motion that takes a to b.
-Pose2D relativePose(const Pose2D& a, const Pose2D& b) {
-    const Point2D offset = inverseTransformPoint({b.x, b.y}, a);
-    return {offset.x, offset.y, std::remainder(b.theta - a.theta, 2 * std::acos(-1.0))};
-}
-}  // namespace
-
 MapLocalizer::MapLocalizer(std::vector<Point2D> map_points, const Pose2D& initial_pose_in_map,
                            MapLocalizerOptions options)
     : options_(options), map_(std::move(map_points)), pose_(initial_pose_in_map) {
@@ -61,11 +53,20 @@ bool MapLocalizer::attempt(const std::vector<Point2D>& scan, const Pose2D& start
 }
 
 LocalizerStep MapLocalizer::update(const std::vector<Point2D>& scan) {
+    // Constant velocity. The first scan is registered too: unlike scan-to-scan
+    // tracking, there is already something to compare against.
+    return registerScan(scan, scans_ == 0 ? pose_ : composePoses(pose_, last_motion_));
+}
+
+LocalizerStep MapLocalizer::update(const std::vector<Point2D>& scan, const Pose2D& motion) {
+    if (!std::isfinite(motion.x) || !std::isfinite(motion.y) || !std::isfinite(motion.theta))
+        throw std::invalid_argument("localizer motion must be finite");
+    return registerScan(scan, composePoses(pose_, motion));
+}
+
+LocalizerStep MapLocalizer::registerScan(const std::vector<Point2D>& scan, const Pose2D& guess) {
     LocalizerStep step;
     ++scans_;
-    // The first scan is registered too: unlike scan-to-scan tracking, there is
-    // already something to compare against.
-    const Pose2D guess = scans_ == 1 ? pose_ : composePoses(pose_, last_motion_);
     bool registered = false;
     if (scan.size() >= options_.icp.min_pairs) {
         // Map is "first", scan is "second": second_in_first is the sensor in the map.
@@ -115,7 +116,7 @@ LocalizerStep MapLocalizer::update(const std::vector<Point2D>& scan) {
     }
     if (!registered) {
         step.lost = true;
-        step.pose_in_map = guess;  // predict: keep moving as before
+        step.pose_in_map = guess;  // predict: trust the motion prediction
     }
     if (scans_ > 1) last_motion_ = relativePose(pose_, step.pose_in_map);
     pose_ = step.pose_in_map;
