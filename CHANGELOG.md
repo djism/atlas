@@ -65,6 +65,18 @@
 - Sandbox robot plans and steers from its estimated pose (map estimate plus
   commanded motion since the scan), with a simulated bumper and replanning;
   one estimator pair per view in the worker.
+- Added `relativePose()` (geometry) and `simulateOdometry()` with
+  `OdometryNoise` (simulation): seeded wheel odometry with bias and noise
+  proportional to distance and turn.
+- Added `MapLocalizer::update(scan, motion)`: the guess comes from a measured
+  motion (wheel odometry) instead of constant velocity.
+- Experiment: `waypointPath()` (stop, turn in place, drive), odometry per run,
+  dead-reckoning score, and a second CLI table comparing motion predictions;
+  `--odometry-scale`. Documented in `docs/localization.md`.
+- WebAssembly: `Localizer.updateWithMotion` and `simulateOdometry`. Sandbox
+  feeds simulated wheel odometry to the map localizer; "Get it lost" can
+  switch to constant velocity for comparison. Lab panel no longer overflows
+  the stage on short windows.
 
 ## 0.1.0 — 2026-11-04
 

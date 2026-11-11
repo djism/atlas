@@ -378,6 +378,53 @@ behavior). Short range still fails.
 Simulated wheel odometry with slip and noise, used as the localizer's motion
 prediction instead of constant velocity.
 
+## 2026-11-10 (session 2) — wheel odometry as the localizer's motion prediction
+
+### Implemented
+
+- C++: `relativePose()`, `simulateOdometry()` (assumed 2 % bias, 5 % random
+  distance and turn error, 0.02 rad per meter), `MapLocalizer::update(scan,
+  motion)`, `waypointPath()`, odometry and dead reckoning in the experiment,
+  a second `atlas_experiment` table and `--odometry-scale`.
+- Sandbox: each scan request carries the true motion since the previous
+  tracked scan; the worker turns it into a noisy wheel reading in C++ and only
+  that reaches the localizer. "Get it lost" has a Wheel odometry / Repeat last
+  motion switch.
+
+### Lesson
+
+The constant-velocity guess is built from the localizer's own past answers,
+so one wrong answer becomes a wrong next guess (feedback). Wheels are an
+independent measurement. Two failures found by measuring: a turn starting
+from standstill (ICP from a no-turn guess accepted a pose 13 cm and 0.24 rad
+off at 59 % fit), and runaway with a 3 m sensor. Dead reckoning alone drifts
+20 cm to 0.9 m, so wheels do not replace the map.
+
+### Validation
+
+`atlas_experiment --seeds 5`: 3 m circles failed 10 of 10 with constant
+velocity, 0 of 10 with odometry (worst 7 cm); stop-and-go at 10 m failed 5 of
+5 (worst 10.1 m) vs 0 of 5 (3 mm). With 3x worse odometry the 3 m rows fail
+again at 20 to 28 cm. Regression test: sudden turn from standstill (constant
+velocity above 5 cm in 18 of 20 seeds; odometry within 3 mm in 20 of 20).
+Mutation checks: ignoring the motion, dropping heading drift, and the
+float-accumulation step bug in `waypointPath` are each caught. Browser: 3 m
+and 1.5 m runs, normal and CPU 2x slower: wheels worst 15 to 28 cm with 0
+bumps; last motion 4.2 to 20.5 m off with up to 5 bumps. Default range, 3 x
+5 min: 0 lost scans, 0 bumps.
+
+### Limitations
+
+Odometry noise values are assumptions. The localizer uses odometry only as
+the guess; it does not weight odometry against the scan (no filter). Between
+scans the sandbox belief adds exact commanded motion. The tracker still uses
+constant velocity. Short range is only as good as the wheels.
+
+### Next smallest step
+
+URL state for the sandbox, then deployment and a browser smoke test in CI;
+then Phase 3 (KITTI).
+
 ### Daily checkpoint template
 
 - Concept understood:

@@ -86,6 +86,8 @@ Goal: the first public, playable demo.
   and an explicit "localization lost" state.
 - The robot plans and steers from its estimated pose, so bad localization
   shows as bad driving (done 2026-11-10; planner still uses the true floor plan).
+- Simulated wheel odometry as the localizer's motion prediction, with a
+  constant-velocity comparison switch (done 2026-11-10).
 - Deterministic seeds; shareable scenario state in the URL.
 - Static hosting with CI deploy; Playwright smoke test.
 
