@@ -1,0 +1,7 @@
+{
+  // Type-checks the browser tests separately from the app, so the app never
+  // sees Node globals. Run: npx tsc --noEmit -p e2e (part of npm run typecheck).
+  "extends": "../tsconfig.json",
+  "compilerOptions": { "types": [] },
+  "include": [".", "../playwright.config.ts"]
+}

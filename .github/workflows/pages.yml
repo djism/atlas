@@ -1,5 +1,6 @@
-# Builds the web sandbox (C++ engine compiled to WebAssembly + React app) and
-# publishes it to GitHub Pages at https://djism.github.io/atlas/.
+# Builds the web sandbox (C++ engine compiled to WebAssembly + React app),
+# smoke-tests it in a browser, and only then publishes it to GitHub Pages at
+# https://djism.github.io/atlas/.
 # One-time setup: repository Settings > Pages > Source: "GitHub Actions".
 name: Sandbox site
 on:
@@ -48,7 +49,21 @@ jobs:
         run: npm test
       - name: Typecheck and build the site
         working-directory: web
-        run: npx tsc --noEmit && npx vite build --base /atlas/
+        run: npm run build:pages
+      # The deploy below runs only if these pass: the page must load, the engine
+      # must answer, and the lab results must be sane, in a real browser.
+      - name: Browser smoke tests (Playwright, installed Chrome)
+        working-directory: web
+        run: npm run test:e2e
+      - name: Keep the test report if they fail
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: |
+            web/playwright-report
+            web/test-results
+          retention-days: 14
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
