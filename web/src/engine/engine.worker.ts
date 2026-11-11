@@ -11,6 +11,11 @@ let engine: MainModule | null = null;
 const estimators = new Map<number, { tracker: Tracker; localizer: Localizer }>();
 const MAP_RESOLUTION = 0.05; // meters
 const SURVEY_RANGE = 20; // meters: the survey sees the whole house
+// Assumed wheel odometry noise (atlas::OdometryNoise; not measured on a real
+// robot): wheels over-report distance by 2 %, random 5 % of distance and of each
+// turn, 0.02 rad of heading error per meter. Same values as atlas_experiment.
+const WHEEL_NOISE = [0.02, 0.05, 0.05, 0.02] as const;
+const WHEEL_SEED_OFFSET = 1_000_000_000; // wheel noise never reuses a scan's seed
 const post = (message: FromEngine, transfer: Transferable[] = []) => self.postMessage(message, transfer);
 
 const ready = createAtlasEngine()
@@ -86,9 +91,16 @@ function handle(e: MainModule, msg: ToEngine): void {
     estimate = { x: t.x, y: t.y, theta: t.theta };
     lost = t.lost;
     status = t.status as IcpStatus;
-    const m = localizer.update(scan.points);
+    // The wheels report the true motion with noise; only that report reaches the localizer.
+    const tm = msg.trueMotion;
+    const o = e.simulateOdometry(tm.x, tm.y, tm.theta, ...WHEEL_NOISE, msg.seed + WHEEL_SEED_OFFSET);
+    if (o.error) return post({ type: "error", id: msg.id, message: o.error });
+    const m = msg.wheels ? localizer.updateWithMotion(scan.points, o.x, o.y, o.theta) : localizer.update(scan.points);
     if (m.error) return post({ type: "error", id: msg.id, message: m.error });
-    mapStep = { estimate: { x: m.x, y: m.y, theta: m.theta }, lost: m.lost, weak: m.weak, inliers: m.inliers };
+    mapStep = {
+      estimate: { x: m.x, y: m.y, theta: m.theta }, lost: m.lost, weak: m.weak, inliers: m.inliers,
+      odometry: { x: o.x, y: o.y, theta: o.theta },
+    };
   }
   const result: StepResult = {
     type: "step", id: msg.id, ranges: scan.ranges, points: scan.points, estimate, lost, status,

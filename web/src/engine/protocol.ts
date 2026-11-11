@@ -23,6 +23,10 @@ export type ToEngine =
       seed: number;
       track: boolean; // also run the tracker and the map localizer on this scan
       owner: number; // whose estimators (see reset)
+      // True motion since this owner's previous tracked scan (sensor frame now,
+      // in the frame then). Used ONLY to simulate the wheel encoders.
+      trueMotion: Pose;
+      wheels: boolean; // map localizer predicts from wheel odometry (else constant velocity)
     }
   | {
       type: "plan";
@@ -64,6 +68,7 @@ export interface MapStep {
   lost: boolean; // registration failed or a jump was rejected; pose predicted
   weak: boolean; // walls left one direction unconstrained; prediction used along it
   inliers: number; // share of scan points that matched the map, 0..1
+  odometry: Pose; // what the simulated wheels reported for this interval
 }
 
 export interface ResetDone {

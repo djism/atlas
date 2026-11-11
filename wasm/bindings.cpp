@@ -222,32 +222,65 @@ public:
     Localizer(val map_flat, double x, double y, double theta)
         : localizer_(pointsFromFlat(emscripten::convertJSArrayToNumberVector<double>(map_flat)), {x, y, theta}) {}
 
-    // points_flat: flat x, y in current sensor axes. Returns the estimate and
-    // diagnostics, or { error }.
+    // points_flat: flat x, y in current sensor axes. Prediction: constant
+    // velocity. Returns the estimate and diagnostics, or { error }.
     val update(val points_flat) {
         try {
             const auto scan = pointsFromFlat(emscripten::convertJSArrayToNumberVector<double>(points_flat));
-            const atlas::LocalizerStep step = localizer_.update(scan);
-            val result = val::object();
-            result.set("x", step.pose_in_map.x);
-            result.set("y", step.pose_in_map.y);
-            result.set("theta", step.pose_in_map.theta);
-            result.set("lost", step.lost);
-            result.set("status", std::string(statusName(step.status)));
-            result.set("jumpRejected", step.jump_rejected);
-            result.set("weak", step.weakly_constrained);
-            result.set("observability", step.observability.weak);
-            result.set("inliers", step.inlier_fraction);
-            result.set("recovered", step.recovered);
-            return result;
+            return toObject(localizer_.update(scan));
+        } catch (const std::exception& e) {
+            return errorObject(e);
+        }
+    }
+
+    // Same, but the prediction is a measured motion (e.g. wheel odometry): the
+    // sensor frame at this scan in the frame at the previous scan.
+    val updateWithMotion(val points_flat, double mx, double my, double mtheta) {
+        try {
+            const auto scan = pointsFromFlat(emscripten::convertJSArrayToNumberVector<double>(points_flat));
+            return toObject(localizer_.update(scan, {mx, my, mtheta}));
         } catch (const std::exception& e) {
             return errorObject(e);
         }
     }
 
 private:
+    static val toObject(const atlas::LocalizerStep& step) {
+        val result = val::object();
+        result.set("x", step.pose_in_map.x);
+        result.set("y", step.pose_in_map.y);
+        result.set("theta", step.pose_in_map.theta);
+        result.set("lost", step.lost);
+        result.set("status", std::string(statusName(step.status)));
+        result.set("jumpRejected", step.jump_rejected);
+        result.set("weak", step.weakly_constrained);
+        result.set("observability", step.observability.weak);
+        result.set("inliers", step.inlier_fraction);
+        result.set("recovered", step.recovered);
+        return result;
+    }
+
     atlas::MapLocalizer localizer_;
 };
+
+// Simulated wheel odometry for one interval of true motion (sensor frame after,
+// in the frame before). Noise: see atlas::OdometryNoise. Returns { x, y, theta }
+// or { error }.
+val simulateOdometry(double mx, double my, double mtheta, double bias, double translation_fraction,
+                     double rotation_fraction, double rotation_per_meter, double seed) {
+    try {
+        const atlas::Pose2D r = atlas::simulateOdometry(
+            {mx, my, mtheta}, {bias, translation_fraction, rotation_fraction, rotation_per_meter},
+            static_cast<std::uint64_t>(seed));
+        val result = val::object();
+        result.set("x", r.x);
+        result.set("y", r.y);
+        result.set("theta", r.theta);
+        return result;
+    } catch (const std::exception& e) {
+        return errorObject(e);
+    }
+}
 }  // namespace
 
 EMSCRIPTEN_BINDINGS(atlas_engine) {
@@ -260,5 +293,7 @@ EMSCRIPTEN_BINDINGS(atlas_engine) {
     emscripten::function("buildMap", &buildMap);
     emscripten::class_<Localizer>("Localizer")
         .constructor<val, double, double, double>()
-        .function("update", &Localizer::update);
+        .function("update", &Localizer::update)
+        .function("updateWithMotion", &Localizer::updateWithMotion);
+    emscripten::function("simulateOdometry", &simulateOdometry);
 }

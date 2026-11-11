@@ -165,6 +165,8 @@ a { color: inherit; }
 .panel {
   position: absolute; z-index: 3; top: var(--s-5); left: max(var(--gutter), env(safe-area-inset-left, 0px));
   width: min(370px, calc(100% - 32px)); background: var(--paper); border-radius: var(--r-card); padding: 22px; box-shadow: var(--shadow-card);
+  /* Never taller than the stage: on short windows the panel scrolls inside it. */
+  max-height: calc(100% - 2 * var(--s-5)); overflow-y: auto; overscroll-behavior: contain;
 }
 .panel-body { display: flex; flex-direction: column; gap: 14px; animation: panel-in var(--t-panel) var(--ease); }
 @keyframes panel-in { from { transform: translateX(20px); opacity: 0.3; } to { transform: none; opacity: 1; } }
@@ -195,7 +197,7 @@ a { color: inherit; }
 .seg.wide button { flex: 1; }
 @media (max-width: 760px) {
   .lab-field { height: auto; min-height: 0; aspect-ratio: 4 / 3.6; }
-  .panel { position: static; width: auto; margin: var(--s-4); box-shadow: none; border: 1px solid var(--line); }
+  .panel { position: static; width: auto; max-height: none; margin: var(--s-4); box-shadow: none; border: 1px solid var(--line); }
 }
 
 /* ---------- footer ---------- */

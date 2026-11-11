@@ -2,7 +2,7 @@ import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { engine } from "../engine/client";
 import { FIRST_POSE, type IcpDemo } from "../icp/IcpDemo";
-import { composePoses, wrapAngle } from "../lib/frames";
+import { composePoses, relativePose, wrapAngle } from "../lib/frames";
 import type { Scenario } from "../scenarios/types";
 import { distanceToSegment, flattenSegments, furnitureSegments, insideFurniture } from "../sim/geometry";
 import type { Furniture, Point, Pose, Segment } from "../types";
@@ -104,6 +104,11 @@ export class Field {
   private readonly openCaptures = new Set<ScanCapture>();
   // Where the robot believes it is: drives planning and steering. Never the truth.
   private belief: Pose | null = null;
+  // True pose at this view's previous tracked scan: the wheels are simulated from
+  // the true motion since then. null until the estimators have their first scan.
+  private lastTrackedPose: Pose | null = null;
+  // Map localizer's prediction: simulated wheel odometry, or constant velocity.
+  wheels = true;
   private bumps = 0;
   private bumpedAt = -1e9;
   private segmentCache: Segment[] | null = null;
@@ -342,6 +347,7 @@ export class Field {
     this.scanQueue.length = 0;
     this.openCaptures.clear();
     this.belief = null;
+    this.lastTrackedPose = null;
     this.bumps = 0;
     this.path = [];
     this.drive = "planning";
@@ -862,12 +868,17 @@ export class Field {
         this.showMap(done.mapPoints);
         this.trackerRunning = true;
       }
+      const track = this.trackerRunning;
+      // The first tracked scan is taken at the estimators' starting pose: no motion yet.
+      const trueMotion = track && this.lastTrackedPose ? relativePose(this.lastTrackedPose, pose) : { x: 0, y: 0, theta: 0 };
       const res = await e.step({
         walls: this.obstacles(), truePose: pose, beams: BEAMS, maxRange,
-        noise: lostMode ? this.noise : 0.005, seed: this.seed++, track: this.trackerRunning, owner: this.owner,
+        noise: lostMode ? this.noise : 0.005, seed: this.seed++, track, owner: this.owner,
+        trueMotion, wheels: this.wheels,
       });
       this.openCaptures.delete(capture);
       if (gen !== this.generation) return;
+      if (track) this.lastTrackedPose = pose;
       this.scanMs = res.engineMs;
       this.applyScan(pose, res.ranges, maxRange);
       if (res.estimate) {
@@ -1104,7 +1115,7 @@ export class Field {
         Object.assign(window, {
           __atlasScanMs: this.scanMs,
           __atlasLost: { truth: { ...this.robot }, belief: this.belief, bumps: this.bumps, map: this.mapEstimate, tracker: this.estimate, mapLost: this.mapLost,
-            mapWeak: this.mapWeak, inliers: this.inliers, drive: this.drive, goal: this.goal, mapLostScans: this.mapLostScans },
+            mapWeak: this.mapWeak, inliers: this.inliers, drive: this.drive, goal: this.goal, mapLostScans: this.mapLostScans, wheels: this.wheels },
         });
     }
   };

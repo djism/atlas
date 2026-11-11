@@ -14,7 +14,7 @@ const MODES: Record<LabMode, { n: number; tab: string; title: string; hint: stri
   },
   lost: {
     n: 2, tab: "Get it lost", title: "Get the robot lost",
-    hint: "Two estimators get the same scans. The blue ring matches each scan against a map of the house; the gray ring only compares scans with each other, so its errors add up. The robot steers by the blue ring, so if it is wrong, the robot drives wrong. Shorten the range, add noise, or move furniture so the house no longer matches the map.",
+    hint: "The blue ring matches each scan against a map of the house; the gray ring only compares scans with each other, so its errors add up. The robot steers by the blue ring. Shorten the range, add noise, or move furniture, then switch the motion guess and watch the difference.",
   },
   plan: {
     n: 3, tab: "Rearrange the house", title: "Rearrange the house",
@@ -30,6 +30,7 @@ export function Lab() {
   const [stats, setStats] = useState<FieldStats | null>(null);
   const [range, setRange] = useState(DEFAULT_RANGE);
   const [noiseCm, setNoiseCm] = useState(DEFAULT_NOISE_CM);
+  const [wheels, setWheels] = useState(true);
   const [method, setMethod] = useState<IcpMethod>("p2l");
   const [icpText, setIcpText] = useState({ tone: "run" as Tone, chip: "Loading engine", pass: "–", error: "–", rmse: "–" });
   const panel = useRef<HTMLDivElement>(null);
@@ -39,6 +40,9 @@ export function Lab() {
   useEffect(() => void icp.load(), [icp]);
 
   useEffect(() => field.current?.setSensor(range, noiseCm / 100), [range, noiseCm]);
+  useEffect(() => {
+    if (field.current) field.current.wheels = wheels;
+  }, [wheels, mode]);
 
   // ICP readouts (the field draws the scans; this mirrors the numbers at 10 Hz)
   useEffect(() => {
@@ -63,6 +67,7 @@ export function Lab() {
     if (m === "lost") {
       setRange(DEFAULT_RANGE);
       setNoiseCm(DEFAULT_NOISE_CM);
+      setWheels(true);
       field.current?.setSensor(DEFAULT_RANGE, DEFAULT_NOISE_CM / 100);
     }
     setMode(m);
@@ -162,6 +167,13 @@ export function Lab() {
                     <label htmlFor="lab-noise"><span>Sensor noise</span><output htmlFor="lab-noise">{noiseCm.toFixed(1)} cm</output></label>
                     <input id="lab-noise" type="range" min={0} max={5} step={0.5} value={noiseCm} onChange={(e) => setNoiseCm(+e.target.value)} />
                   </div>
+                  <Segmented
+                    className="wide"
+                    label="Blue ring's motion guess"
+                    value={wheels ? "wheels" : "last"}
+                    options={[{ value: "wheels", label: "Wheel odometry" }, { value: "last", label: "Repeat last motion" }]}
+                    onChange={(v) => setWheels(v === "wheels")}
+                  />
                   <div className="row">
                     <button type="button" className="btn ghost" onClick={() => field.current?.restartTracker()}>Re-map and restart</button>
                   </div>
@@ -170,7 +182,7 @@ export function Lab() {
                     <li><span className="sw sw-base" aria-hidden="true" />No map: scan-to-scan</li>
                     <li><span className="sw sw-dots" aria-hidden="true" />The map{stats?.mapPoints ? ` (${stats.mapPoints.toLocaleString()} points)` : ""}</li>
                   </ul>
-                  <p className="fine">Both C++ estimators get only the scans and the starting pose. The map is surveyed from the house as it was at restart. Errors compare with the simulator's answer key; map match is the share of scan points that fit the map.</p>
+                  <p className="fine">The C++ estimators get the scans and the starting pose. Wheel odometry is simulated with assumed noise (2% bias, 5% random). The gray ring always repeats its last motion. The map is surveyed at restart. Errors compare with the simulator's answer key.</p>
                 </>
               )}
               {mode === "plan" && (

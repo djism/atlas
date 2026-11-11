@@ -18,6 +18,13 @@ export function composePoses(bInA: Pose, cInB: Pose): Pose {
   return { x: p.x, y: p.y, theta: wrapAngle(bInA.theta + cInB.theta) };
 }
 
+// The reverse of composePoses: c_in_a seen from b_in_a, i.e. c_in_b (the
+// motion that takes pose b to pose c).
+export function relativePose(bInA: Pose, cInA: Pose): Pose {
+  const d = rotateIntoFrame(bInA, { x: cInA.x - bInA.x, y: cInA.y - bInA.y });
+  return { x: d.x, y: d.y, theta: wrapAngle(cInA.theta - bInA.theta) };
+}
+
 // Rotate a direction (not a point) from world axes into a frame's axes.
 export function rotateIntoFrame(frame: Pose, v: Point): Point {
   const c = Math.cos(frame.theta);

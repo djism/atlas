@@ -51,7 +51,8 @@ export class IcpDemo {
     const walls = flattenSegments([...homeScenario.walls, ...homeScenario.furniture.flatMap(furnitureSegments)]);
     const second = composePoses(FIRST_POSE, MOTION);
     const scan = (pose: Pose, seed: number) =>
-      e.step({ walls, truePose: pose, beams: 180, maxRange: 6.5, noise: 0.008, seed, track: false, owner: 0 });
+      e.step({ walls, truePose: pose, beams: 180, maxRange: 6.5, noise: 0.008, seed, track: false, owner: 0,
+        trueMotion: { x: 0, y: 0, theta: 0 }, wheels: false });
     const [a, b] = [await scan(FIRST_POSE, 101), await scan(second, 102)];
     this.first = a.points;
     this.second = b.points;

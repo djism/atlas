@@ -78,11 +78,20 @@ Main thread (React + Three.js)               Web Worker (C++ via WASM)
 - **The robot drives on its belief.** In every view except "Match two scans",
   the robot plans and steers from its **estimate**, never its true position.
   The belief is the latest map-localizer estimate composed with the motion
-  commanded since that scan was captured (perfect odometry: no wheel slip yet).
+  commanded since that scan was captured (exact commands between scans; see
+  wheel odometry below for what the localizer itself gets).
   Each command (turn, then forward step) is applied to the true robot. If the
   step would put the robot's disc into a wall or furniture, a simulated bumper
   stops it, odometry sees no forward motion, and it replans from its belief.
   The robot does not move until its first estimate arrives ("Localizing").
+- **Wheel odometry.** Each scan request carries the TRUE motion since this
+  view's previous tracked scan; the worker passes it through C++
+  `simulateOdometry()` (assumed 2 % bias, 5 % random distance and turn error,
+  0.02 rad per meter; same values as `atlas_experiment`). Only that noisy
+  report reaches the map localizer, as its starting guess
+  (`updateWithMotion`). "Get it lost" can switch the blue ring to "Repeat last
+  motion" (constant velocity) for comparison. The gray tracker always uses
+  constant velocity.
 - **Planner (simplified).** Plans from the belief, but on the **true** floor
   plan (furniture where it really is). A real robot would plan on its own map.
 - **One estimator pair per view.** The hero and the lab each simulate a robot;
@@ -114,7 +123,10 @@ Main thread (React + Three.js)               Web Worker (C++ via WASM)
 | Get it lost, 3 m range, re-mapped, 25 s | With map 1.4 mm, no map 8.3 cm |
 | Robot steering from its estimate, 4 x 5 min (normal, CPU 2x/3x slower, other window sizes) | 0 bumps, 0 lost scans |
 | Planner tab, 3 boxes dropped, 25 s | 9 replans from the estimate, 0 bumps |
-| Get it lost, 1.5 m range | Estimate 5.8 m off; the robot steered into the desk area and bumped ("Bumped: it was not where it thought") |
+| Get it lost, 1.5 m range (before wheel odometry) | Estimate 5.8 m off; the robot steered into the desk area and bumped ("Bumped: it was not where it thought") |
+| Wheel odometry vs repeat last motion, 3 m range, 2 min + 3 min (CPU 2x slower) | Wheels: worst 15 / 17 cm, 0 bumps. Last motion: worst 8.5 / 20.5 m, over 0.5 m off 90 / 94 % of the time, 0 / 1 bumps |
+| Same, 1.5 m range | Wheels: worst 28 / 26 cm, 0 bumps (most scans lost: coasting on the wheels). Last motion: worst 4.2 / 4.3 m, 3 / 5 bumps |
+| Default 8 m range, 5 min x 3 (wheels; wheels with CPU 3x slower at 1280 px; last motion) | 0 lost scans, 0 bumps in all three; worst live gap 14 to 18 cm, mostly scan lag |
 | Engine time per scan, both estimators | median 21 ms, 90th percentile 26 ms (was 4.8 ms with the tracker only) |
 
 These are single live runs, not seed sweeps (the doorway runaway and its fix
@@ -136,8 +148,10 @@ against a map are the fixes.
   is most of the 21 ms per scan. A spatial index is the known fix.
 - The jump limits assume how fast motion can change between scans.
 - Planner is given the true floor plan (it plans from the estimate); no dynamic
-  obstacles. Odometry is perfect (commands execute exactly), so the belief
-  between scans adds no error of its own.
+  obstacles. Between scans (at most about 0.3 s) the belief adds the exact
+  commanded motion; wheel noise enters once per scan interval, at the localizer.
+- Wheel noise values are assumptions. With 3x worse wheels, short range fails
+  again in `atlas_experiment` (20 to 28 cm); see [localization](localization.md).
 - After a bump against a wall it cannot see past, a badly lost robot keeps
   pushing and replanning; there is no recovery behavior.
 - One scenario (home). Street-car and warehouse scenarios are planned.
