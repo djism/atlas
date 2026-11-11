@@ -462,6 +462,43 @@ and machine timing). No browser test runs before publishing.
 
 Browser smoke test in the Pages workflow, gating deployment; then Phase 3.
 
+## 2026-11-11 — browser smoke tests gate the deploy
+
+### Implemented
+
+- Playwright 1.64.1 (pinned, project-local, drives the installed Chrome; no
+  browser download). Six tests against the production build under `/atlas/`;
+  any console error fails. Runs in the Pages workflow before publishing;
+  failed runs keep the report for 14 days. `npm run build:pages`,
+  `npm run test:e2e`; `SMOKE_NO_GPU`, `SMOKE_CPU_SLOWDOWN` rehearse CI.
+- Separate TypeScript config for the tests, so app code never sees Node globals.
+
+### Lesson
+
+The tests found two bugs my hand-written tours missed: a 404 for the tab icon
+on every load (those tours listened for script errors, not failed requests),
+and a per-frame crash in the ICP figure with software WebGL (negative elapsed
+time). A fast GPU hid it. Also: a single reading of map match let a deliberate
+break pass on a momentary dip; the tests now judge 10 s of readings.
+
+### Validation
+
+Deliberate breaks: engine disabled fails 5 of 6; shared links mapping the
+moved house fails on map match (92 %). Software WebGL, and software WebGL with
+a 3x slower CPU: 6 of 6. Clean copy with the exact workflow steps and CI=1:
+6 of 6 in 2.4 min.
+
+### Limitations
+
+Chrome only; runs on pushes to `main`, not pull requests. Loose bounds: they
+catch a broken site, not small accuracy changes. Phase 2 still lacks
+residual/inlier charts and exact replay; no real first-visitor test.
+
+### Next smallest step
+
+Phase 3: get KITTI odometry data loading (outside Git), read one Velodyne
+scan into C++, and visualize it, before any 3D ICP.
+
 ### Daily checkpoint template
 
 - Concept understood:

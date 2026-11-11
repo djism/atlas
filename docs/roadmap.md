@@ -88,10 +88,17 @@ Goal: the first public, playable demo.
   shows as bad driving (done 2026-11-10; planner still uses the true floor plan).
 - Simulated wheel odometry as the localizer's motion prediction, with a
   constant-velocity comparison switch (done 2026-11-10).
-- Shareable setup links and GitHub Pages deployment from CI (done 2026-11-10);
-  remaining: a browser smoke test before publishing.
-- Deterministic seeds; shareable scenario state in the URL.
-- Static hosting with CI deploy; Playwright smoke test.
+- Shareable setup links and GitHub Pages deployment from CI (done 2026-11-10).
+- Playwright smoke tests gate every deploy (done 2026-11-11).
+- Deterministic seeds; shareable scenario state in the URL. (Partly: links
+  reproduce the setup and per-scan seeds are fixed, but runs are not exact
+  replays; engine results arrive asynchronously.)
+- Static hosting with CI deploy; Playwright smoke test. (Done.)
+
+Status 2026-11-11: deliverables done except residual/inlier **charts** (the lab
+shows these as numbers) and exact replay. The 30-second criterion below has
+not been tested with a real first-time visitor. Decision: move to Phase 3 and
+treat these as polish, per "protect Phase 3".
 
 Done when: a first-time visitor understands what to do within about 30 seconds,
 the UI stays smooth while the engine runs, and every view is labeled live/simulated.

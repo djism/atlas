@@ -82,6 +82,12 @@
   Codec in `web/src/lib/share.ts` with unit tests (`npm test`, Node's runner).
 - Added `.github/workflows/pages.yml`: builds the engine with pinned
   Emscripten 6.0.13 and publishes the sandbox to GitHub Pages.
+- Playwright smoke tests (`web/e2e`, installed Chrome, no browser download)
+  gate the Pages deploy: hero, ICP figure, map localizer, shared link, planner,
+  phone layout; any console error fails.
+- Fixed: the ICP figure crashed every frame on slow (software WebGL) machines
+  when an engine answer arrived after the frame's timestamp. Added a tab icon
+  (every load logged a 404 for `/favicon.ico`).
 
 ## 0.1.0 — 2026-11-04
 

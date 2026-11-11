@@ -189,11 +189,12 @@ commits or schedule unattended pushes.
       check, ray-cast LiDAR, point-to-line ICP, scan tracking, occupancy-grid map,
       scan-to-map localization, degeneracy handling, scripted experiment
       (known failure: short sensor range; holds with decent wheel odometry)
-- [ ] **Phase 2:** interactive sandbox v1 — started: engine in the browser
+- [ ] **Phase 2:** interactive sandbox v1 — nearly done: engine in the browser
       (WebAssembly), home-robot scenario with a live 3D lab, map localizer vs
-      tracker in the lab, robot plans and steers from its estimate, simulated
-      wheel odometry as the localizer's guess, shareable links, deployed to
-      GitHub Pages; remaining: browser smoke test before publishing
+      tracker, robot plans and steers from its estimate, simulated wheel
+      odometry, shareable links, deployed to GitHub Pages behind browser smoke
+      tests; remaining polish: residual/inlier charts, exact replay, a test
+      with first-time visitors
 - [ ] **Phase 3:** 3D LiDAR odometry on KITTI, measured against a baseline (headline result)
 - [ ] **Phase 4:** distributed evaluation sweeps with leases, retries, idempotent results
 - [ ] **Phase 5:** replay explorer for real-data results

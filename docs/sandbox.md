@@ -18,7 +18,13 @@ npm run build:wasm   # C++ core + wasm/bindings.cpp -> web/src/engine/generated/
 npm run dev          # http://localhost:5173
 npm run build        # typecheck + production bundle in web/dist/
 npm test             # unit tests (Node's built-in runner; needs Node 23.6+ for .ts)
+npm run build:pages  # typecheck + production build under /atlas/, as published
+npm run test:e2e     # browser smoke tests against that build (Playwright)
 ```
+
+The smoke tests use the installed Google Chrome (`channel: "chrome"`), so
+Playwright downloads no browsers. `SMOKE_NO_GPU=1` forces software WebGL and
+`SMOKE_CPU_SLOWDOWN=3` a 3x slower CPU, to rehearse CI machines.
 
 Built with Emscripten 6.0.13; the engine is a single ~132 KB module.
 
@@ -26,8 +32,37 @@ Built with Emscripten 6.0.13; the engine is a single ~132 KB module.
 
 `.github/workflows/pages.yml` runs on every push to `main`: it installs
 Emscripten 6.0.13 (emsdk pinned to a commit, cached), compiles the engine from
-the committed C++, runs `npm test`, builds the site with `--base /atlas/`, and
-publishes `web/dist` to https://djism.github.io/atlas/. Build output stays out
+the committed C++, runs `npm test`, builds the site with `--base /atlas/`,
+runs the browser smoke tests, and only if they pass publishes `web/dist` to
+https://djism.github.io/atlas/. A failed run keeps the Playwright report as a
+build artifact for 14 days.
+
+### Browser smoke tests (`web/e2e/smoke.spec.ts`)
+
+Each loads the production build and fails on any browser console error:
+
+| Test | Passes when |
+| --- | --- |
+| Home | The hero robot reports "Driving to point" and its pose changes |
+| Match two scans | ICP says "Converged" within 1 cm of the answer key |
+| Get it lost | Worst map-localizer error under 5 cm and median map match at least 80 %, over 10 s |
+| Shared link | Same moved furniture: median match under 80 % with the map of the original house (`mapped=`), at least 80 % with a map of the moved house; address bar keeps the link |
+| Rearrange the house | The planner plans, the robot drives, 0 bumps in 5 s |
+| Phone width | No sideways scrolling at 390 px |
+
+These are loose sanity bounds: they catch a broken page or engine, not small
+accuracy changes (that is what the C++ tests and `atlas_experiment` are for).
+Checked that they fail when they should: with the engine disabled, 5 of 6
+fail (the layout test does not need it); with shared links surveying the
+moved house, the shared-link test fails on map match (92 %). A single reading
+of map match was too weak (a momentary dip passed it), so the tests judge
+10 s of readings.
+
+They found two real bugs on their first runs. No tab icon: every page load
+logged a 404 for `/favicon.ico` (now an inline SVG icon). And with software
+WebGL, the ICP figure crashed every frame: the frame timestamp can be earlier
+than the moment the engine's answer arrives, so elapsed time went negative
+and indexed pass -1 (`IcpDemo.frame`, now clamped). Real GPUs had hidden it. Build output stays out
 of Git. One-time setup: repository Settings > Pages > Source: "GitHub Actions".
 
 To check a production build locally under the same path:
@@ -203,8 +238,7 @@ against a map are the fixes.
 - After a bump against a wall it cannot see past, a badly lost robot keeps
   pushing and replanning; there is no recovery behavior.
 - One scenario (home). Street-car and warehouse scenarios are planned.
-- No browser tests in CI yet: the Pages workflow builds the engine and site
-  and runs the link codec's unit tests; nothing loads the page before it is
-  published.
+- Browser smoke tests run only in the Pages workflow (pushes to `main`), not
+  on pull requests, and only in Chrome; no Safari or Firefox coverage.
 - Bundle is ~690 KB (~190 KB gzip), mostly Three.js; not yet code-split.
 - Isotropic point noise, not along-beam range noise.
