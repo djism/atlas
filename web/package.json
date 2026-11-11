@@ -8,6 +8,7 @@
     "build:wasm": "bash ../wasm/build.sh",
     "dev": "vite",
     "typecheck": "tsc --noEmit",
+    "test": "node --test tests/*.test.ts",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview"
   },

@@ -1,11 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { Field, FieldStats } from "../field/Field";
+import { MAX_BOXES, type Field, type FieldStats } from "../field/Field";
 import { FieldView } from "../field/FieldView";
 import { IcpDemo, type IcpMethod } from "../icp/IcpDemo";
 import { formatLength } from "../lib/frames";
+import { decodeLab, encodeLab, type LabLimits, type LabMode } from "../lib/share";
+import { homeScenario } from "../scenarios/home";
 import { Chip, Segmented, driveChip, type Tone } from "./ui";
-
-type LabMode = "match" | "lost" | "plan";
 
 const MODES: Record<LabMode, { n: number; tab: string; title: string; hint: string }> = {
   match: {
@@ -24,13 +24,24 @@ const MODES: Record<LabMode, { n: number; tab: string; title: string; hint: stri
 
 const DEFAULT_RANGE = 8;
 const DEFAULT_NOISE_CM = 1;
+const LIMITS: LabLimits = {
+  range: { min: 1, max: 8, step: 0.5, default: DEFAULT_RANGE },
+  noiseCm: { min: 0, max: 5, step: 0.5, default: DEFAULT_NOISE_CM },
+  maxBoxes: MAX_BOXES,
+  width: homeScenario.bounds.width,
+  height: homeScenario.bounds.height,
+};
+const FURNITURE_IDS = homeScenario.furniture.map((f) => f.id);
 
 export function Lab() {
-  const [mode, setMode] = useState<LabMode>("match");
+  // A shared link (?lab=...) sets the starting tab, sensor, guess, and furniture.
+  const [shared] = useState(() => decodeLab(window.location.search, FURNITURE_IDS, LIMITS));
+  const [mode, setMode] = useState<LabMode>(shared?.mode ?? "match");
   const [stats, setStats] = useState<FieldStats | null>(null);
-  const [range, setRange] = useState(DEFAULT_RANGE);
-  const [noiseCm, setNoiseCm] = useState(DEFAULT_NOISE_CM);
-  const [wheels, setWheels] = useState(true);
+  const [range, setRange] = useState(shared?.range ?? DEFAULT_RANGE);
+  const [noiseCm, setNoiseCm] = useState(shared?.noiseCm ?? DEFAULT_NOISE_CM);
+  const [wheels, setWheels] = useState(shared?.wheels ?? true);
+  const [copied, setCopied] = useState<"idle" | "done" | "failed">("idle");
   const [method, setMethod] = useState<IcpMethod>("p2l");
   const [icpText, setIcpText] = useState({ tone: "run" as Tone, chip: "Loading engine", pass: "–", error: "–", rmse: "–" });
   const panel = useRef<HTMLDivElement>(null);
@@ -38,6 +49,47 @@ export function Lab() {
   const icp = useMemo(() => new IcpDemo(), []);
 
   useEffect(() => void icp.load(), [icp]);
+
+  // Opened from a shared link: rebuild the house and bring the lab into view.
+  useEffect(() => {
+    if (!shared) return;
+    if (shared.mode !== "match") field.current?.loadLayout(shared.room, shared.mapped);
+    document.getElementById("lab")?.scrollIntoView({ block: "start" });
+  }, [shared]);
+
+  // The address bar always holds a link to the current setup (replaceState: no
+  // history entries). The untouched default leaves the URL clean.
+  const link = () => {
+    const f = field.current;
+    // Without a field (no WebGL), keep the shared layout rather than erase it.
+    const empty = { moved: {}, boxes: [] };
+    const room = f?.layout() ?? shared?.room ?? empty;
+    const mapped = f?.mappedLayout() ?? shared?.mapped ?? empty;
+    return encodeLab({ mode, range, noiseCm, wheels, room, mapped }, LIMITS);
+  };
+  useEffect(() => {
+    const search = link();
+    const want = search === "?lab=match" && !shared ? "" : search;
+    if (want !== window.location.search) {
+      window.history.replaceState(null, "", `${window.location.pathname}${want}${window.location.hash}`);
+    }
+  });
+
+  const copyLink = async () => {
+    const url = `${window.location.origin}${window.location.pathname}${link()}#lab`;
+    try {
+      await navigator.clipboard.writeText(url);
+      setCopied("done");
+    } catch {
+      setCopied("failed");
+    }
+    window.setTimeout(() => setCopied("idle"), 2500);
+  };
+  const share = (
+    <button type="button" className="btn ghost" onClick={copyLink} aria-live="polite">
+      {copied === "done" ? "Link copied" : copied === "failed" ? "Copy from the address bar" : "Copy link"}
+    </button>
+  );
 
   useEffect(() => field.current?.setSensor(range, noiseCm / 100), [range, noiseCm]);
   useEffect(() => {
@@ -154,6 +206,7 @@ export function Lab() {
                   />
                   <div className="row">
                     <button type="button" className="btn ghost" onClick={() => icp.replay()}>Replay</button>
+                    {share}
                   </div>
                 </>
               )}
@@ -176,6 +229,7 @@ export function Lab() {
                   />
                   <div className="row">
                     <button type="button" className="btn ghost" onClick={() => field.current?.restartTracker()}>Re-map and restart</button>
+                    {share}
                   </div>
                   <ul className="legend" aria-label="Legend">
                     <li><span className="sw sw-map" aria-hidden="true" />With map: scan-to-map</li>
@@ -191,6 +245,7 @@ export function Lab() {
                     <button type="button" className="btn" onClick={() => field.current?.dropRandomBox()}>Drop a box</button>
                     <button type="button" className="btn ghost" onClick={() => field.current?.clearBoxes()}>Clear boxes</button>
                     <button type="button" className="btn ghost" onClick={() => field.current?.resetRoom()}>Reset room</button>
+                    {share}
                   </div>
                   <p className="fine">The robot plans and steers from its C++ map estimate, not its true position. Simplification: the planner is given the true floor plan; a real robot would plan on its own map.</p>
                 </>

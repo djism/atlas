@@ -3,6 +3,7 @@ import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { engine } from "../engine/client";
 import { FIRST_POSE, type IcpDemo } from "../icp/IcpDemo";
 import { composePoses, relativePose, wrapAngle } from "../lib/frames";
+import { layoutOf, type Layout } from "../lib/share";
 import type { Scenario } from "../scenarios/types";
 import { distanceToSegment, flattenSegments, furnitureSegments, insideFurniture } from "../sim/geometry";
 import type { Furniture, Point, Pose, Segment } from "../types";
@@ -58,6 +59,7 @@ interface ScanCapture {
 const SPEED = 0.6; // m/s
 const TURN_RATE = 3.2; // rad/s
 const BOX = 0.5;
+export const MAX_BOXES = 10;
 const GRID_RESOLUTION = 0.05;
 const MAX_LINE = 900;
 const reduced = typeof matchMedia !== "undefined" && matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -107,6 +109,10 @@ export class Field {
   // True pose at this view's previous tracked scan: the wheels are simulated from
   // the true motion since then. null until the estimators have their first scan.
   private lastTrackedPose: Pose | null = null;
+  // The house as it was at the last restart: the map is surveyed from this,
+  // even if furniture moves before the first scan.
+  private mapObstacles: Float64Array | null = null;
+  private mappedFurniture: Furniture[] = [];
   // Map localizer's prediction: simulated wheel odometry, or constant velocity.
   wheels = true;
   private bumps = 0;
@@ -344,6 +350,8 @@ export class Field {
 
   restartTracker(): void {
     this.generation++;
+    this.mapObstacles = this.obstacles();
+    this.mappedFurniture = this.furniture.map((f) => ({ ...f }));
     this.scanQueue.length = 0;
     this.openCaptures.clear();
     this.belief = null;
@@ -379,6 +387,41 @@ export class Field {
   clearBoxes(): void {
     this.furniture = this.furniture.filter((f) => f.kind !== "box");
     this.worldChanged();
+  }
+
+  // Furniture now, and when the map was surveyed (for shareable links).
+  layout(): Layout {
+    return layoutOf(this.furniture, this.scenario.furniture);
+  }
+
+  mappedLayout(): Layout {
+    return layoutOf(this.mappedFurniture, this.scenario.furniture);
+  }
+
+  // Rebuilds a shared setup: survey the map from `mapped`, then arrange the
+  // house as `room`, so "the house differs from the map" survives the link.
+  loadLayout(room: Layout, mapped: Layout): void {
+    this.furniture = this.furnitureFrom(mapped);
+    this.worldChanged();
+    this.restartTracker();
+    this.furniture = this.furnitureFrom(room);
+    this.worldChanged();
+  }
+
+  private furnitureFrom(layout: Layout): Furniture[] {
+    const list = this.scenario.furniture.map((f) => {
+      const p = layout.moved[f.id];
+      if (!p) return { ...f };
+      // Same bounds as dragging: keep the whole piece inside the house.
+      const hw = f.w / 2;
+      const hh = f.h / 2;
+      return { ...f, x: Math.min(this.W - hw - 0.05, Math.max(hw + 0.05, p.x)), y: Math.min(this.H - hh - 0.05, Math.max(hh + 0.05, p.y)) };
+    });
+    for (const b of layout.boxes.slice(0, MAX_BOXES)) {
+      this.boxCount++;
+      list.push({ id: `box-${this.boxCount}`, label: `Box ${this.boxCount}`, x: b.x, y: b.y, w: BOX, h: BOX, angle: 0, height: BOX * 0.8, kind: "box" });
+    }
+    return list;
   }
 
   resetRoom(): void {
@@ -587,7 +630,7 @@ export class Field {
 
   private addBox(p: Point): boolean {
     const boxes = this.furniture.filter((f) => f.kind === "box").length;
-    if (boxes >= 10) return false;
+    if (boxes >= MAX_BOXES) return false;
     if (Math.hypot(p.x - this.robot.x, p.y - this.robot.y) < 0.5) return false;
     if (p.x < 0.3 || p.y < 0.3 || p.x > this.W - 0.3 || p.y > this.H - 0.3) return false;
     this.boxCount++;
@@ -863,7 +906,7 @@ export class Field {
         // points (answer-key poses), like a mapping drive before the experiment.
         this.needsTrackerReset = false;
         const survey = this.scenario.patrol.map((p) => ({ x: p.x, y: p.y, theta: 0 }));
-        const done = await e.reset(this.owner, pose, this.obstacles(), survey);
+        const done = await e.reset(this.owner, pose, this.mapObstacles ?? this.obstacles(), survey);
         if (gen !== this.generation) return;
         this.showMap(done.mapPoints);
         this.trackerRunning = true;
