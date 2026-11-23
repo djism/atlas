@@ -499,6 +499,53 @@ residual/inlier charts and exact replay; no real first-visitor test.
 Phase 3: get KITTI odometry data loading (outside Git), read one Velodyne
 scan into C++, and visualize it, before any 3D ICP.
 
+## 2026-11-11 to 2026-11-23 — Phase 3: KITTI, first 3D odometry, deskewing, bias diagnosis
+
+### Implemented
+
+- KITTI data (raw drive 2011_09_30_drive_0016 = odometry sequence 04, 541 MB
+  kept outside the repo; the 80 GB benchmark set did not fit in 34 GB free).
+- Readers for scans, poses, calibration, times; camera-to-Velodyne conversion
+  `Tr^-1 * T * Tr`; top-down images; overlap and map checks.
+- Voxel-hash nearest neighbors, point-to-point 3D ICP (Gauss-Newton),
+  scan-to-scan odometry, trajectory comparison; deskewing.
+
+### Lessons
+
+- A 0.37 deg camera-Velodyne tilt moves the end of a 394 m drive by 2.5 m;
+  my prediction ignoring it was wrong.
+- Over all points, "no motion" overlapped as well as the truth (road and
+  hedges along a straight road): the hallway problem in 3D.
+- My first synthetic ICP test moved the same points, so ICP "solved" a pure
+  hallway; real lasers hit different spots. Identical motions per frame hid a
+  chaining-order bug. Test bounds at the median of 20 seeds would have flaked.
+- Deskewing was my leading suspect for the drift and explains about a tenth.
+  ICP started at the truth walks away: raised points pull +2.3 cm forward and
+  +0.019 deg heading per pair (matching the odometry's bias), road rings pull
+  backward. Point-to-point matching is biased by sampling patterns.
+
+### Validation
+
+Reader matches an independent Python decode; all 279 scans read; median
+height -1.50 to -1.79 m in every scan (frame check). Ground-truth map sharp.
+Spin direction: clockwise deskew better in 14/14 pairs 5 frames apart,
+counterclockwise worse in 14/14. Sequence 04 odometry: 6.99 % drift raw,
+6.49 % deskewed, 6.36 % oracle (1 m thinning); 4.69 / 4.04 / 3.97 % at 0.5 m;
+48 to 137 ms per scan on one Apple M4 core. Unit tests with hand-made data;
+deliberate breaks caught for frame conversion, Jacobian sign, chaining order,
+spin direction, deskew reference time, rotation log, BMP row order.
+
+### Limitations
+
+One sequence, and parameters looked at on it. Scan-to-scan only (no local
+map), point-to-point, no robust weights, no KITTI segment metric, no baseline
+run yet. Not comparable to published numbers (those use compensated scans).
+
+### Next smallest step
+
+Point-to-plane 3D ICP; success test set in advance: `icp-from-truth` stops
+walking away, then rerun the odometry.
+
 ### Daily checkpoint template
 
 - Concept understood:

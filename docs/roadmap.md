@@ -117,6 +117,16 @@ Goal: credible, measured odometry on a public driving dataset (KITTI odometry fi
 - Profiling before optimization; report latency per frame and memory.
 - New dependencies (e.g. Eigen) discussed and added only here, where needed.
 
+Status 2026-11-23: one raw drive (sequence 04) downloaded (the 80 GB set did
+not fit). Done: scan, pose, calibration, time readers; camera-to-Velodyne
+frames; voxel-hash nearest neighbors (instead of a k-d tree); point-to-point
+3D ICP (Gauss-Newton, no dependencies); scan-to-scan odometry; deskewing
+(clockwise, measured). Sequence 04: 4.0 to 6.5 % drift. Diagnosed: deskewing
+removes about a tenth of it; the rest is point-to-point bias from raised
+points (forward and heading) and road rings (backward). Next: point-to-plane,
+local map, KITTI segment metric, a second sequence, KISS-ICP on the same
+scans. Parameters so far were looked at on sequence 04 itself.
+
 Done when: a results table with hardware/config, failure analysis, and plots is
 reproducible from documented commands.
 

@@ -89,6 +89,20 @@
   when an engine answer arrived after the frame's timestamp. Added a tab icon
   (every load logged a 404 for `/favicon.ico`).
 
+- Phase 3 started (KITTI, raw drive 2011_09_30_drive_0016 = sequence 04):
+  `readKittiScan()`, `readKittiPoses()`, `readKittiVelodyneInCamera()`,
+  `readKittiTimes()`, `velodynePoses()` (camera to Velodyne frame),
+  `summarizeScan()`; `Point3D`, `Pose3D` and 3D transforms (`*3D` names);
+  `birdsEyeView()` and `writeBmp()`; `nearestDistances()`.
+- Added `voxelDownsample()` and `VoxelGrid3D` (exact nearest neighbor within
+  the voxel size), `alignIcp3D()` (point-to-point, Gauss-Newton),
+  `ScanOdometry3D` and `compareTrajectories()`.
+- Added `rotationVector()`, `scaleMotion()`, `sweepFraction()`, `deskewScan()`
+  and `ScanOdometryOptions::deskew` (clockwise sweep, measured).
+- `atlas_kitti` CLI: `scan`, `truth`, `overlap`, `map`, `odometry`,
+  `deskew-check`, `icp-from-truth`. Documented in `docs/kitti.md`.
+- `.gitignore`: `/Datasets/`.
+
 ## 0.1.0 — 2026-11-04
 
 - Added C++17 2D point and pose types with explicit frame conventions.

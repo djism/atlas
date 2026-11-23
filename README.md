@@ -5,8 +5,10 @@
 Latest release: **v0.1.0 — 2D geometry and motion recovery with known correspondences.**
 In progress (unreleased, roadmap Phase 1 complete): least-squares alignment, point-to-point
 and point-to-line 2D ICP, ray-cast LiDAR, scan tracking, an occupancy-grid map, scan-to-map
-localization with degeneracy handling, a scripted experiment, a simplified planner, and a live
-browser sandbox running the C++ engine via WebAssembly.
+localization with degeneracy handling, a scripted experiment, a simplified planner, a live
+browser sandbox running the C++ engine via WebAssembly, and (Phase 3, started) a first 3D LiDAR
+odometry on real KITTI data, measured against ground truth (4.0-7.0 % drift so far; see
+[KITTI](docs/kitti.md)).
 
 Given two observations of stationary landmarks, Atlas estimates the translation
 and rotation that express the second observation in the first sensor's frame.
@@ -118,9 +120,10 @@ has a shareable link. See [sandbox](docs/sandbox.md) to build and run it.
 | Path | Purpose |
 | --- | --- |
 | `include/atlas/` | Public types and function declarations |
-| `src/` | Geometry, LiDAR simulation and noise, matching, ICP, tracking, and planning |
+| `src/` | Geometry, LiDAR simulation and noise, matching, ICP, tracking, planning; 3D poses, voxel grid, 3D ICP, scan odometry, KITTI readers, deskewing |
 | `apps/demo.cpp` | Reproducible known-pair, ICP, and mapping examples |
 | `apps/experiment.cpp` | Scripted tracker-vs-localizer experiment with failure flags |
+| `apps/kitti.cpp` | KITTI checks: scan facts and images, ground truth, overlap, maps, odometry, deskew and bias diagnostics |
 | `tests/test_atlas.cpp` | Numerical and invalid-input checks |
 | `docs/frames.md` | Coordinate conventions and an explanation of the experiment |
 | `docs/alignment.md` | Multi-point alignment derivation, degeneracy, and limits |
@@ -129,6 +132,7 @@ has a shareable link. See [sandbox](docs/sandbox.md) to build and run it.
 | `docs/mapping.md` | Occupancy grid mapping: log-odds, beam traversal, findings |
 | `docs/localization.md` | Scan-to-map localization, degeneracy handling, experiment results |
 | `docs/sandbox.md` | Browser sandbox: build, architecture, measurements, limits |
+| `docs/kitti.md` | KITTI data, license, frames, 3D odometry results, deskewing, bias diagnosis |
 | `wasm/` | Emscripten bindings and build script for the browser engine |
 | `web/` | React + TypeScript + Vite site (Three.js rendering, engine in a Web Worker) |
 | `docs/progress.md` | Daily milestones, validation, and next learning task |
@@ -195,7 +199,10 @@ commits or schedule unattended pushes.
       odometry, shareable links, deployed to GitHub Pages behind browser smoke
       tests; remaining polish: residual/inlier charts, exact replay, a test
       with first-time visitors
-- [ ] **Phase 3:** 3D LiDAR odometry on KITTI, measured against a baseline (headline result)
+- [ ] **Phase 3:** 3D LiDAR odometry on KITTI, measured against a baseline (headline result) —
+      started: KITTI readers and frame conversion, voxel grid, point-to-point 3D ICP,
+      scan-to-scan odometry and deskewing on sequence 04 (4.0 % drift at best); found the
+      remaining bias in point-to-point matching; next: point-to-plane, local map, baseline
 - [ ] **Phase 4:** distributed evaluation sweeps with leases, retries, idempotent results
 - [ ] **Phase 5:** replay explorer for real-data results
 - [ ] **Later:** loop closure and pose graph, a separate planner module,
