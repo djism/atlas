@@ -1,17 +1,30 @@
 #include "atlas/geometry.hpp"
+#include "atlas/geometry3d.hpp"
 #include "atlas/experiment.hpp"
+#include "atlas/icp3d.hpp"
 #include "atlas/icp.hpp"
+#include "atlas/image.hpp"
+#include "atlas/kitti.hpp"
 #include "atlas/localizer.hpp"
 #include "atlas/mapping.hpp"
 #include "atlas/matching.hpp"
+#include "atlas/matching3d.hpp"
+#include "atlas/odometry3d.hpp"
 #include "atlas/planner.hpp"
 #include "atlas/simulation.hpp"
 #include "atlas/tracker.hpp"
+#include "atlas/voxel.hpp"
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
+#include <cstdio>
 #include <cstdlib>
+#include <cstring>
+#include <fstream>
 #include <iostream>
+#include <iterator>
 #include <limits>
+#include <random>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -27,6 +40,26 @@ void near(double actual, double expected, const std::string& name) {
 template <typename F> void rejects(F operation, const std::string& name) {
     try { operation(); check(false, name); }
     catch (const std::invalid_argument&) {}
+}
+// For file and format problems, which throw std::runtime_error.
+template <typename F> void failsToRead(F operation, const std::string& name) {
+    try { operation(); check(false, name); }
+    catch (const std::runtime_error&) {}
+}
+// Writes raw bytes to a scratch file in the working directory.
+void writeBytes(const std::string& path, const std::vector<unsigned char>& bytes) {
+    std::ofstream(path, std::ios::binary).write(reinterpret_cast<const char*>(bytes.data()),
+                                                 static_cast<std::streamsize>(bytes.size()));
+}
+// Little-endian bytes of float32 records, as KITTI stores them.
+std::vector<unsigned char> floatBytes(const std::vector<float>& values) {
+    std::vector<unsigned char> out;
+    for (float v : values) {
+        std::uint32_t bits;
+        std::memcpy(&bits, &v, 4);
+        for (int i = 0; i < 4; ++i) out.push_back(static_cast<unsigned char>(bits >> (8 * i)));
+    }
+    return out;
 }
 }
 
@@ -1252,6 +1285,316 @@ int main() {
     rejects([] { estimateFromMatchedPoints({{1,0},{-1,0},{0,1},{0,-1}},
                                            {{1,0},{-1,0},{0,-1},{0,1}}); },
             "multi ambiguous rotation");
+    // ---- KITTI scan files ----
+    {
+        // The first two records of real scan 0 of 2011_09_30_drive_0016, byte for
+        // byte (xxd), then a hand-made third point.
+        const std::vector<unsigned char> real{
+            0x6d,0xe7,0x6d,0x42, 0xdf,0x4f,0x6b,0x41, 0xe7,0xfb,0x11,0x40, 0x00,0x00,0x00,0x00,
+            0xae,0xc7,0x6d,0x42, 0x35,0x5e,0x6e,0x41, 0xe7,0xfb,0x11,0x40, 0x00,0x00,0x00,0x00};
+        auto bytes = real;
+        const auto third = floatBytes({-1.5f, 2.25f, -1.75f, 0.5f});
+        bytes.insert(bytes.end(), third.begin(), third.end());
+        const std::string file = "atlas_test_scan.bin";
+        writeBytes(file, bytes);
+        const KittiScan scan = readKittiScan(file);
+        check(scan.points.size() == 3 && scan.reflectance.size() == 3, "KITTI scan: 48 bytes are 3 points");
+        check(std::abs(scan.points[0].x - 59.476) < 5e-4 && std::abs(scan.points[0].y - 14.707) < 5e-4 &&
+              std::abs(scan.points[0].z - 2.281) < 5e-4, "KITTI scan: real bytes decode to (59.476, 14.707, 2.281)");
+        check(scan.points[2].x == -1.5 && scan.points[2].y == 2.25 && scan.points[2].z == -1.75 &&
+              scan.reflectance[2] == 0.5f, "KITTI scan: values and order exact");
+
+        const ScanSummary summary = summarizeScan(scan);
+        check(summary.points == 3 && std::abs(summary.forward_share - 2.0 / 3) < 1e-12, "scan summary: forward share");
+        near(summary.median_z, 2.2809998989105225, "scan summary: median z");  // float 2.281
+        check(std::abs(summary.min_range - std::sqrt(1.5 * 1.5 + 2.25 * 2.25 + 1.75 * 1.75)) < 1e-12,
+              "scan summary: nearest point");
+        check(summary.max_reflectance == 0.5f, "scan summary: max reflectance");
+
+        writeBytes(file, {});
+        check(readKittiScan(file).points.empty(), "KITTI scan: empty file, empty scan");
+        rejects([&] { summarizeScan(readKittiScan(file)); }, "scan summary of an empty scan");
+        writeBytes(file, std::vector<unsigned char>(bytes.begin(), bytes.end() - 3));
+        failsToRead([&] { readKittiScan(file); }, "KITTI scan: truncated file (45 bytes)");
+        writeBytes(file, floatBytes({1, std::numeric_limits<float>::quiet_NaN(), 0, 0}));
+        failsToRead([&] { readKittiScan(file); }, "KITTI scan: NaN rejected");
+        std::remove(file.c_str());
+        failsToRead([] { readKittiScan("no_such_dir/0000000000.bin"); }, "KITTI scan: missing file");
+
+        check(kittiScanPath("velodyne_points/data", 42) == "velodyne_points/data/0000000042.bin", "KITTI path: 10 digits");
+        check(kittiScanPath("data/", 0) == "data/0000000000.bin", "KITTI path: trailing slash");
+    }
+    // ---- 3D rigid transforms ----
+    {
+        // B is A turned 90 deg about z (x -> y) and moved to (1, 2, 3).
+        const Pose3D b{{0, -1, 0, 1, 0, 0, 0, 0, 1}, {1, 2, 3}};
+        const Point3D p = transformPoint3D(Point3D{1, 0, 0}, b);  // B's x axis points along A's y
+        check(p.x == 1 && p.y == 3 && p.z == 3, "3D transform: rotate then translate");
+        const Pose3D back = composePoses3D(b, inversePose3D(b));
+        check(orthonormalityError(back) < 1e-15 && std::abs(back.r[0] - 1) < 1e-15 &&
+              std::hypot(back.t.x, back.t.y) + std::abs(back.t.z) < 1e-15, "3D: pose times its inverse is identity");
+        const Pose3D c{{1, 0, 0, 0, 0, -1, 0, 1, 0}, {0, 0, 1}};  // 90 deg about x
+        const Pose3D c_in_b = relativePose3D(b, composePoses3D(b, c));
+        check(std::abs(c_in_b.t.z - 1) < 1e-12 && std::abs(c_in_b.r[5] + 1) < 1e-12, "3D: relative undoes compose");
+        near(rotationAngle(b), pi / 2, "3D: rotation angle 90 deg");
+        near(rotationAngle(Pose3D{}), 0, "3D: identity has angle 0");
+        check(orthonormalityError(Pose3D{{1, 0, 0, 0, 1, 0, 0, 0, 2}, {}}) > 0.9, "3D: a stretch is not a rotation");
+        check(orthonormalityError(Pose3D{{-1, 0, 0, 0, 1, 0, 0, 0, 1}, {}}) > 1.9, "3D: a mirror is not a rotation");
+    }
+    // ---- KITTI poses, calibration, times, and the camera -> Velodyne frame change ----
+    {
+        // Ground truth uses camera axes (x right, y down, z forward); the Velodyne
+        // uses x forward, y left, z up. A Tr with exactly that axis swap, and the
+        // Velodyne 0.3 m behind and 0.1 m above the camera:
+        //   camera = R * velodyne + t, R rows: (0,-1,0), (0,0,-1), (1,0,0)
+        const std::string calib = "atlas_test_calib.txt", poses = "atlas_test_poses.txt", times = "atlas_test_times.txt";
+        std::ofstream(calib) << "P0: 1 0 0 0 0 1 0 0 0 0 1 0\nTr: 0 -1 0 0 0 0 -1 -0.1 1 0 0 -0.3\n";
+        // Frame 0: identity. Frame 1: camera 1.5 m forward (camera z) and 0.2 m down (camera y).
+        std::ofstream(poses) << "1 0 0 0 0 1 0 0 0 0 1 0\n1 0 0 0 0 1 0 0.2 0 0 1 1.5\n\n";
+        std::ofstream(times) << "0.000000e+00\n1.041284e-01\n";
+        const auto camera = readKittiPoses(poses);
+        const Pose3D tr = readKittiVelodyneInCamera(calib);
+        check(camera.size() == 2 && camera[1].t.z == 1.5 && camera[1].t.y == 0.2, "KITTI poses: 3x4 rows, blank line skipped");
+        const auto velodyne = velodynePoses(camera, tr);
+        // Expected in Velodyne axes: 1.5 m forward (+x), 0.2 m DOWN (-z), nothing sideways.
+        check(std::abs(velodyne[1].t.x - 1.5) < 1e-12 && std::abs(velodyne[1].t.y) < 1e-12 &&
+              std::abs(velodyne[1].t.z + 0.2) < 1e-12, "camera forward/down becomes Velodyne +x / -z");
+        check(std::abs(velodyne[0].t.x) + std::abs(velodyne[0].t.y) + std::abs(velodyne[0].t.z) < 1e-12,
+              "frame 0 is the origin in both frames");
+        const auto t = readKittiTimes(times);
+        check(t.size() == 2 && std::abs(t[1] - 0.1041284) < 1e-12, "KITTI times");
+
+        std::ofstream(poses) << "1 0 0 0 0 1 0 0 0 0 1\n";  // 11 numbers
+        failsToRead([&] { readKittiPoses(poses); }, "KITTI poses: 11 numbers rejected");
+        std::ofstream(poses) << "2 0 0 0 0 1 0 0 0 0 1 0\n";  // stretched
+        failsToRead([&] { readKittiPoses(poses); }, "KITTI poses: non-rotation rejected");
+        std::ofstream(poses) << "1 0 0 0 0 1 0 0 0 0 1 0 7\n";  // 13 numbers
+        failsToRead([&] { readKittiPoses(poses); }, "KITTI poses: 13 numbers rejected");
+        std::ofstream(calib) << "P0: 1 0 0 0 0 1 0 0 0 0 1 0\n";
+        failsToRead([&] { readKittiVelodyneInCamera(calib); }, "KITTI calibration without Tr");
+        std::ofstream(times) << "0.0\nabc\n";
+        failsToRead([&] { readKittiTimes(times); }, "KITTI times: non-number rejected");
+        for (const auto& f : {calib, poses, times}) std::remove(f.c_str());
+        failsToRead([] { readKittiPoses("no_such_dir/04.txt"); }, "KITTI poses: missing file");
+    }
+    // ---- 3D nearest distances ----
+    {
+        const std::vector<Point3D> reference{{0, 0, 0}, {10, 0, 0}};
+        const auto d = nearestDistances(reference, {{1, 0, 0}, {9, 0, 2}}, Pose3D{});
+        check(std::abs(d[0] - 1) < 1e-12 && std::abs(d[1] - std::sqrt(5.0)) < 1e-12, "nearest distances");
+        const auto moved = nearestDistances(reference, {{1, 0, 0}}, Pose3D{{1, 0, 0, 0, 1, 0, 0, 0, 1}, {8.5, 0, 0}});
+        near(moved[0], 0.5, "nearest distances: queries moved into the reference frame first");
+        check(takeEvery({{0, 0, 0}, {1, 0, 0}, {2, 0, 0}, {3, 0, 0}, {4, 0, 0}}, 2).size() == 3, "takeEvery: 0, 2, 4");
+        rejects([] { takeEvery({}, 0); }, "takeEvery: step 0");
+        rejects([] { nearestDistances({}, {{0, 0, 0}}, Pose3D{}); }, "nearest distances: empty reference");
+        const auto shifted = transformPoints({{1, 2, 3}}, Pose3D{{1, 0, 0, 0, 1, 0, 0, 0, 1}, {1, 1, 1}});
+        check(shifted[0].x == 2 && shifted[0].y == 3 && shifted[0].z == 4, "transformPoints");
+    }
+    // ---- Rotation vectors, fractional motions, deskewing ----
+    {
+        const Point3D v{0.3, -0.2, 0.5};
+        const Point3D back = rotationVector(rotationFromVector(v));
+        check(std::abs(back.x - v.x) + std::abs(back.y - v.y) + std::abs(back.z - v.z) < 1e-12,
+              "rotationVector undoes rotationFromVector");
+        const Point3D tiny = rotationVector(rotationFromVector({1e-9, 0, 0}));
+        check(std::abs(tiny.x - 1e-9) < 1e-15, "rotationVector: tiny angles");
+        Pose3D m = rotationFromVector({0, 0, 0.1});
+        m.t = {1.4, 0.02, 0.01};
+        const Pose3D half = scaleMotion(m, 0.5), twice = composePoses3D(half, half);
+        check(rotationAngle(relativePose3D(m, twice)) < 1e-12 && std::abs(twice.t.x - 1.4) < 0.01,
+              "scaleMotion: two halves make (about) the whole");
+        check(rotationAngle(scaleMotion(m, 0)) < 1e-15 && scaleMotion(m, 0).t.x == 0, "scaleMotion: zero is identity");
+        near(rotationAngle(scaleMotion(m, -0.5)), 0.05, "scaleMotion: negative fraction turns back");
+
+        // Clockwise sweep (seen from above): starts behind (from the left), forward
+        // at the middle, then right, ends behind.
+        near(sweepFraction({1, 0, 0}, SweepDirection::Clockwise), 0.5, "sweep: forward is the middle");
+        near(sweepFraction({0, 1, 0}, SweepDirection::Clockwise), 0.25, "sweep clockwise: left is a quarter in");
+        near(sweepFraction({0, -1, 0}, SweepDirection::Clockwise), 0.75, "sweep clockwise: right is three quarters in");
+        near(sweepFraction({0, 1, 0}, SweepDirection::Counterclockwise), 0.75, "sweep counterclockwise: left is late");
+        // Driving 1.4 m forward per sweep, no turning. A point straight left was
+        // measured a quarter sweep early, from 0.35 m behind the middle position:
+        // seen from the middle it is 0.35 m further back. A point ahead is unchanged.
+        Pose3D drive;
+        drive.t = {1.4, 0, 0};
+        const auto fixed = deskewScan({{0, 5, 0}, {10, 0, 0}, {0, -5, 0}}, drive, SweepDirection::Clockwise);
+        near(fixed[0].x, -0.35, "deskew: left point moved back by a quarter sweep of motion");
+        near(fixed[1].x, 10, "deskew: point ahead unchanged (measured at the middle)");
+        near(fixed[2].x, 0.35, "deskew: right point moved forward (measured late)");
+        near(fixed[0].y, 5, "deskew: forward motion does not move points sideways");
+    }
+    // ---- Voxel grid nearest neighbors and downsampling ----
+    {
+        std::mt19937_64 gen(5);
+        std::uniform_real_distribution<double> u(-5, 5);
+        std::vector<Point3D> cloud(3000);
+        for (auto& p : cloud) p = {u(gen), u(gen), u(gen)};
+        VoxelGrid3D grid(0.8);
+        grid.insert(cloud);
+        int disagree = 0, found_count = 0;
+        for (int k = 0; k < 500; ++k) {
+            const Point3D q{u(gen), u(gen), u(gen)};
+            double brute = 1e9;
+            for (const auto& p : cloud) brute = std::min(brute, std::sqrt((p.x-q.x)*(p.x-q.x) + (p.y-q.y)*(p.y-q.y) + (p.z-q.z)*(p.z-q.z)));
+            Point3D f;
+            double d = 0;
+            const bool hit = grid.nearest(q, 0.8, f, d);
+            found_count += hit;
+            if (hit != (brute <= 0.8) || (hit && std::abs(d - brute) > 1e-12)) ++disagree;
+        }
+        check(disagree == 0 && found_count > 100, "voxel grid: same nearest point as brute force within the gate");
+        Point3D f;
+        double d;
+        rejects([&] { grid.nearest({0, 0, 0}, 0.9, f, d); }, "voxel grid: gate larger than the voxel");
+        const auto thin = voxelDownsample({{0.1, 0.1, 0.1}, {0.2, 0.2, 0.2}, {1.1, 0.1, 0.1}, {-0.1, 0.1, 0.1}}, 1.0);
+        check(thin.size() == 3 && thin[0].x == 0.1, "voxel downsample: first point per cube; negative side is its own cube");
+        rejects([] { voxelDownsample({}, 0); }, "voxel downsample: zero size");
+    }
+    // ---- 3D point-to-point ICP ----
+    {
+        near(transformPoint3D({1, 0, 0}, rotationFromVector({0, 0, pi / 2})).y, 1, "Rodrigues: 90 deg about z takes x to y");
+        check(orthonormalityError(rotationFromVector({0.3, -0.2, 0.5})) < 1e-14, "Rodrigues: a rotation");
+        near(rotationAngle(rotationFromVector({0.3, -0.2, 0.5})), std::sqrt(0.38), "Rodrigues: angle is |v|");
+
+        // A synthetic street in the reference sensor frame: road, two side walls
+        // 8 m away, and (optionally) poles and a building face ahead. Each call
+        // samples the surfaces afresh, like a laser hitting different spots each
+        // sweep. (The first version moved the SAME points: every point's exact
+        // twin was in the other scan, and ICP "solved" even a pure hallway.)
+        std::mt19937_64 gen(11);
+        std::uniform_real_distribution<double> u(0, 1);
+        const auto street = [&](bool landmarks) {
+            std::vector<Point3D> pts;
+            for (int i = 0; i < 6000; ++i) pts.push_back({-30 + 60 * u(gen), -8 + 16 * u(gen), -1.7});
+            for (int i = 0; i < 3000; ++i) {
+                const double x = -30 + 60 * u(gen), z = -1.7 + 4 * u(gen);
+                pts.push_back({x, i % 2 ? 8.0 : -8.0, z});
+            }
+            if (landmarks) {
+                for (const Point3D c : {Point3D{5, 4, 0}, Point3D{-6, -3, 0}, Point3D{12, -5, 0}})
+                    for (int i = 0; i < 300; ++i) {
+                        const double a = 2 * pi * u(gen);
+                        pts.push_back({c.x + 0.15 * std::cos(a), c.y + 0.15 * std::sin(a), -1.7 + 3 * u(gen)});
+                    }
+                for (int i = 0; i < 1500; ++i) pts.push_back({20.0, -8 + 16 * u(gen), -1.7 + 4 * u(gen)});
+            }
+            return pts;
+        };
+        // The new scan is taken 1.3 m forward, slightly left and up, turned 0.03 rad.
+        Pose3D truth = rotationFromVector({0.002, -0.004, 0.03});
+        truth.t = {1.3, 0.05, 0.02};
+        const auto seen_from = [&](const std::vector<Point3D>& world) {
+            return transformPoints(world, inversePose3D(truth));  // same points, new sensor frame
+        };
+        Pose3D guess = rotationFromVector({0, 0, 0.01});
+        guess.t = {1.0, 0.0, 0.0};  // 30 cm and 0.02 rad off: like a constant-velocity guess
+        const auto errorOf = [&](const Pose3D& estimate) {
+            const Pose3D d = relativePose3D(truth, estimate);
+            return std::make_pair(std::sqrt(d.t.x * d.t.x + d.t.y * d.t.y + d.t.z * d.t.z), rotationAngle(d));
+        };
+
+        const auto rich = street(true);
+        VoxelGrid3D grid(1.0);
+        grid.insert(rich);
+        const Icp3DResult r = alignIcp3D(grid, seen_from(street(true)), guess);
+        const auto [rich_t, rich_r] = errorOf(r.source_in_reference);
+        check(r.status == Icp3DStatus::Converged, "3D ICP: converged on a street with landmarks");
+        check(rich_t < 0.015 && rich_r < 1e-3, "3D ICP: recovers the motion within 1.5 cm and 1 mrad");
+
+        // Road and two parallel walls only: a 3D hallway. Forward motion has no
+        // evidence; ICP keeps most of the guess's 30 cm error along x and still
+        // reports "converged" (measured: -0.25 to -0.29 m over three seeds).
+        VoxelGrid3D hall_grid(1.0);
+        hall_grid.insert(street(false));
+        const Icp3DResult h = alignIcp3D(hall_grid, seen_from(street(false)), guess);
+        const Pose3D hd = relativePose3D(truth, h.source_in_reference);
+        // The status varies (converged, or still creeping at the iteration limit);
+        // the forward error stays either way, so the status is no evidence.
+        check(std::abs(hd.t.x) > 0.15, "3D ICP in a hallway: the forward error stays");
+        check(std::abs(hd.t.y) < 0.03 && std::abs(hd.t.z) < 0.01, "3D ICP in a hallway: sideways and height still recovered");
+
+        // One point repeated: rotation is unconstrained -> Degenerate.
+        VoxelGrid3D one(1.0);
+        one.insert(std::vector<Point3D>(100, Point3D{1, 1, 1}));
+        check(alignIcp3D(one, std::vector<Point3D>(100, Point3D{1, 1, 1}), Pose3D{}).status == Icp3DStatus::Degenerate,
+              "3D ICP: a single repeated point is degenerate");
+        check(alignIcp3D(grid, {{100, 100, 100}}, Pose3D{}).status == Icp3DStatus::TooFewPairs, "3D ICP: too few pairs");
+        Icp3DOptions wide;
+        wide.max_correspondence_distance = 2.0;
+        rejects([&] { alignIcp3D(grid, rich, Pose3D{}, wide); }, "3D ICP: gate wider than the grid voxel");
+
+        // Odometry over three frames of the same rich street, moving by `truth`
+        // each time; and the trajectory comparison.
+        // Odometry, two ways. Each frame moves differently (with identical motions,
+        // M*M*M is the same in any order, so a chaining-order bug would hide).
+        std::vector<Pose3D> motions(3);
+        motions[0] = truth;
+        motions[0].t = {truth.t.x / 4, truth.t.y / 4, truth.t.z / 4};
+        motions[1] = rotationFromVector({0, 0, -0.02});
+        motions[1].t = {0.3, -0.03, 0.0};
+        motions[2] = rotationFromVector({0.01, 0, 0.015});
+        motions[2].t = {0.28, 0.02, 0.01};
+        ScanOdometryOptions fine;
+        fine.source_voxel = 0.25;
+        const auto runOdometry = [&](bool fresh) {
+            ScanOdometryOptions o = fine;
+            // Exact twins only survive if the reference keeps every point (thinning
+            // keeps the first point per cube, and cubes differ between frames).
+            if (!fresh) o.reference_voxel = 1e-3;
+            ScanOdometry3D odometry(o);
+            std::vector<Pose3D> estimate, true_path{Pose3D{}};
+            Pose3D sensor{};  // true sensor pose in the first frame
+            for (int k = 0; k < 4; ++k) {
+                estimate.push_back(odometry.update(transformPoints(fresh ? street(true) : rich, inversePose3D(sensor))).pose);
+                if (k < 3) sensor = composePoses3D(sensor, motions[k]);
+                if (k < 3) true_path.push_back(sensor);
+            }
+            return compareTrajectories(estimate, true_path);
+        };
+        // (a) Mechanics: the SAME points every frame, so each registration is exact
+        // and any error comes from chaining or the guess.
+        const auto exact = runOdometry(false);
+        check(exact.end_error < 1e-3, "3D odometry mechanics: exact registrations chain to the true end within 1 mm");
+        // (b) Realistic: fresh samples each frame. Measured over 20 seeds: worst
+        // step 0.8 to 3.0 cm, end 0.4 to 3.9 cm; bounds set above that spread.
+        const auto cmp = runOdometry(true);
+        check(*std::max_element(cmp.step_translation_error.begin(), cmp.step_translation_error.end()) < 0.05,
+              "3D odometry, fresh samples: each motion within 5 cm");
+        check(cmp.end_error < 0.06, "3D odometry, fresh samples: three chained motions end within 6 cm");
+        double expected_length = 0;
+        for (const Pose3D& m : motions) expected_length += std::sqrt(m.t.x * m.t.x + m.t.y * m.t.y + m.t.z * m.t.z);
+        near(cmp.length, expected_length, "trajectory comparison: path length");
+        rejects([] { compareTrajectories({Pose3D{}}, {Pose3D{}}); }, "trajectory comparison: too short");
+    }
+    // ---- Bird's-eye images ----
+    {
+        // 4 x 4 pixels of 1 m around the sensor. Forward (+x) is up, left (+y) is left.
+        const auto view = birdsEyeView({{1.5, 0.5, 0}, {1.5, 0.5, 9}, {-1.5, -1.5, 0}, {30, 0, 0}}, 2, 1);
+        check(view.width == 4 && view.height == 4, "bird's-eye: 4 x 4 pixels");
+        check(view.at(0, 1) < view.at(3, 3) && view.at(3, 3) < 255, "bird's-eye: forward-left at top left; two points darker than one");
+        int marked = 0;
+        for (auto v : view.pixels) marked += v < 255;
+        check(marked == 2, "bird's-eye: z ignored, outside points skipped");
+        // Centered elsewhere: the same picture as the points moved by -center.
+        const auto off = birdsEyeView({{101.5, 50.5, 0}}, 2, 1, {100, 50});
+        check(off.at(0, 1) < 255, "bird's-eye: window centered on a given point");
+        rejects([] { birdsEyeView({}, 0, 1); }, "bird's-eye: zero extent");
+        rejects([] { birdsEyeView({}, 1000, 0.01); }, "bird's-eye: too many pixels");
+
+        const std::string image_file = "atlas_test_image.bmp";
+        // 5 x 5 (rows padded to 16 bytes). The point is 1.5 m forward: row 1 from
+        // the top, deliberately off-center so a top-down file would put it elsewhere.
+        writeBmp(birdsEyeView({{1.5, 0.5, 0}}, 2.5, 1), image_file);
+        std::ifstream in(image_file, std::ios::binary);
+        const std::vector<char> bmp((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        in.close();
+        std::remove(image_file.c_str());
+        check(bmp.size() == 54 + 16 * 5 && bmp[0] == 'B' && bmp[1] == 'M', "BMP: header and padded rows");
+        // BMP stores rows bottom-up: image row r is file row 4 - r.
+        const auto pixel = [&](int row, int column) { return static_cast<unsigned char>(bmp[54 + (4 - row) * 16 + 3 * column]); };
+        check(pixel(1, 2) < 255 && pixel(3, 2) == 255, "BMP: rows stored bottom-up");
+        failsToRead([] { writeBmp(birdsEyeView({}, 1, 1), "no_such_dir/x.bmp"); }, "BMP: unwritable path");
+    }
     if (failures) return EXIT_FAILURE;
     std::cout << "All geometry, simulation, matching, and motion checks passed.\n";
     return EXIT_SUCCESS;

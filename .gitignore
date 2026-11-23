@@ -15,3 +15,6 @@
 /web/src/engine/generated/
 /web/test-results/
 /web/playwright-report/
+
+# Downloaded datasets (KITTI etc.): never commit
+/Datasets/

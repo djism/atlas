@@ -14,6 +14,14 @@ struct Pose2D {
     double theta;
 };
 
+// 3D point, meters. Its frame is stated wherever it is used (e.g. KITTI
+// Velodyne frame: x forward, y left, z up, origin at the sensor).
+struct Point3D {
+    double x;
+    double y;
+    double z;
+};
+
 // Straight line segment from start to end (e.g. a wall), meters.
 struct Segment2D {
     Point2D start;

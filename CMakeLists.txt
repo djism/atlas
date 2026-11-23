@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.16)
 project(atlas VERSION 0.1.0 LANGUAGES CXX)
 
-add_library(atlas_core src/geometry.cpp src/simulation.cpp src/matching.cpp src/icp.cpp src/tracker.cpp src/planner.cpp src/mapping.cpp src/localizer.cpp src/experiment.cpp)
+add_library(atlas_core src/geometry.cpp src/simulation.cpp src/matching.cpp src/icp.cpp src/tracker.cpp src/planner.cpp src/mapping.cpp src/localizer.cpp src/experiment.cpp src/kitti.cpp src/image.cpp src/geometry3d.cpp src/matching3d.cpp src/voxel.cpp src/icp3d.cpp src/odometry3d.cpp)
 target_include_directories(atlas_core PUBLIC include)
 target_compile_features(atlas_core PUBLIC cxx_std_17)
 set_target_properties(atlas_core PROPERTIES CXX_EXTENSIONS OFF)
@@ -16,6 +16,9 @@ target_link_libraries(atlas_demo PRIVATE atlas_core)
 
 add_executable(atlas_experiment apps/experiment.cpp)
 target_link_libraries(atlas_experiment PRIVATE atlas_core)
+
+add_executable(atlas_kitti apps/kitti.cpp)
+target_link_libraries(atlas_kitti PRIVATE atlas_core)
 
 include(CTest)
 if(BUILD_TESTING)
