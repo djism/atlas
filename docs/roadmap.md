@@ -137,7 +137,7 @@ analysis and reproduce commands in `docs/kitti.md`.
 Done when: a results table with hardware/config, failure analysis, and plots is
 reproducible from documented commands.
 
-### Phase 4 — Distributed evaluation (target: weeks 6–7)
+### Phase 4 — Distributed evaluation (done 2026-11-24)
 
 Goal: show distributed-systems skill on a real need — sweeping configurations
 across many sequences.
@@ -147,6 +147,15 @@ across many sequences.
 - Demonstrated worker crash and recovery; duplicate-execution safety.
 - Aggregated report generated from durable results.
 - Claims limited to what is shown: no exactly-once or fleet-scale claims.
+
+Status 2026-11-24: done (`eval/`, docs/evaluation.md). Python standard
+library (HTTP + SQLite) around the unchanged C++ engine (`atlas_kitti run`).
+A 24-job KITTI sweep survived a worker kill -9, a coordinator kill -9 and
+restart, and a worker paused past its lease: all 24 done, one accepted
+result each, exactly the 2 interrupted jobs re-run, the paused worker's
+late result refused. The first run exposed a worker bug (a late heartbeat
+cancelled the next job) and a design gap (outage longer than a lease); both
+fixed and regression-tested. Workers ran as processes on one machine.
 
 ### Phase 5 — Replay explorer (target: weeks 7–8)
 

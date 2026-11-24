@@ -3,7 +3,7 @@
 **Learning vehicle motion estimation and SLAM through a C++ implementation.**
 
 Latest release: **v0.1.0 — 2D geometry and motion recovery with known correspondences.**
-In progress (unreleased, roadmap Phases 1 and 3 complete): least-squares alignment, point-to-point
+In progress (unreleased, roadmap Phases 1, 3 and 4 complete): least-squares alignment, point-to-point
 and point-to-line 2D ICP, ray-cast LiDAR, scan tracking, an occupancy-grid map, scan-to-map
 localization with degeneracy handling, a scripted experiment, a simplified planner, a live
 browser sandbox running the C++ engine via WebAssembly, and 3D LiDAR odometry on real KITTI
@@ -19,8 +19,9 @@ a ten-degree left turn.
 
 This is an educational foundation. It is not a complete SLAM system, any company's
 stack, or vehicle-ready software. Its real-data result is odometry (no loop closure),
-on two KITTI sequences. Loop closure, full SLAM, and distributed evaluation are
-planned work, not implemented features.
+on two KITTI sequences. Loop closure and full SLAM are planned work, not implemented
+features. Evaluation sweeps run on a small coordinator/worker system (`eval/`),
+demonstrated on one machine; no fleet-scale or exactly-once claims.
 
 ## Build and run
 
@@ -211,7 +212,11 @@ commits or schedule unattended pushes.
       Sequence 04: Atlas 0.48 % / 0.12 deg per 100 m, KISS-ICP 0.41 % / 0.19; 43 ms per scan on
       one core, 79 MB. Held-out sequence 07 (694 m, no changes): Atlas 0.43 % / 0.25,
       KISS-ICP 0.75 % / 0.37; one win each, so no ranking. Trajectory plots via `atlas_kitti plot`
-- [ ] **Phase 4:** distributed evaluation sweeps with leases, retries, idempotent results
+- [x] **Phase 4:** distributed evaluation — coordinator and workers (Python standard library,
+      HTTP + SQLite) running the C++ engine: bounded queue, leases with heartbeats and fencing
+      tokens, retries with backoff, content-addressed durable results, restart grace. A 24-job
+      KITTI sweep survived a worker crash, a coordinator crash and restart, and a paused worker:
+      every job done with exactly one accepted result. See [evaluation](docs/evaluation.md)
 - [ ] **Phase 5:** replay explorer for real-data results
 - [ ] **Later:** loop closure and pose graph, a separate planner module,
       street-car and warehouse-robot scenarios, challenge mode

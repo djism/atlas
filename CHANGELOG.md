@@ -122,6 +122,18 @@
   path toggles, results table, per-stretch step errors), labeled as recorded.
   `tools/export_web_results.py` (standard library only) writes its path data;
   `web/src/lib/kittiPlot.ts` lays it out (unit-tested); a smoke test covers it.
+- Phase 4: distributed evaluation in `eval/` (Python standard library):
+  coordinator (HTTP + SQLite), workers, bounded queue with backpressure,
+  leases with heartbeats and fencing tokens, retries with exponential backoff
+  and jitter, content-addressed durable results, restart grace, report from
+  stored results, and a crash/recovery demo. `atlas_kitti run` (one
+  configured run, JSON output). 19 tests (CI job "eval", Linux).
+- KITTI sweep (24 jobs) under a worker crash, a coordinator crash and
+  restart, and a paused worker: all done, one accepted result each. Default
+  settings best or tied-best on both sequences.
+- Fixed (found by that sweep): a finished job's late heartbeat could cancel
+  the worker's next job; a coordinator outage longer than a lease re-ran
+  healthy jobs (now restart grace).
 
 ## 0.1.0 — 2026-11-04
 

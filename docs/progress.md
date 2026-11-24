@@ -656,6 +656,50 @@ reproduces the numpy per-stretch errors exactly. Checked by screenshot at
 Table numbers are typed from docs/kitti.md, not generated; paths are every
 third pose. Static recorded results, not the Phase 5 replay explorer.
 
+## 2026-11-24 (session 3) — Phase 4: distributed evaluation
+
+### Implemented
+
+- `eval/`: Store (SQLite job state + SHA-256-named result files), HTTP
+  coordinator, workers with heartbeats, sweep submitter with backpressure,
+  report from stored results, crash/recovery demo; `atlas_kitti run`.
+- CI job "eval" (Linux) runs the 19 Python tests.
+
+### Lessons
+
+- The first real run "passed" (24/24, one result each) and still had a bug:
+  the logs showed a healthy job cancelled. Read the logs, not only the
+  verdict. Cause: a Python closure read loop variables late, so a finished
+  job's heartbeat cancelled the next job. Reproduced with slow heartbeats in
+  a test (6 of 10 jobs abandoned) before fixing.
+- Correct is not the same as efficient: an outage longer than a lease is
+  handled safely by the rules (expire, re-run) but wastes work; restart grace
+  fixes that.
+- Standard HTTPServer does a reverse-DNS lookup on bind that hung for tens
+  of seconds here; the restarted coordinator looked dead.
+- Leases + fencing give at-least-once execution with one accepted result per
+  job; a paused worker really did finish its run, and was refused.
+
+### Validation
+
+KITTI sweep, 24 jobs, 227 s on one M4: kill -9 w1, kill -9 coordinator and
+restart, SIGSTOP w2 for 14 s (lease 6 s). All 24 done; 26 attempts; exactly
+2 expired leases; w2's late heartbeat and result refused; accuracy identical
+to the first run. Method findings: correction matters most on 04 (0.48 ->
+1.07 %), deskew on 07 (0.43 -> 0.76 %); default best or tied on both.
+Tests: 19 pass; 8 deliberate breaks each caught.
+
+### Limitations
+
+One coordinator (restartable, not replicated), no authentication, workers
+were processes on one machine, wall-clock leases, orphaned engine runs after
+kill -9, no garbage collection of rejected results.
+
+### Next smallest step
+
+Phase 5: a replay explorer for these recorded results (clearly labeled
+replay), or more KITTI sequences for the sweep.
+
 ### Daily checkpoint template
 
 - Concept understood:
