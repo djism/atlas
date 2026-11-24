@@ -10,6 +10,8 @@
 #include "atlas/matching.hpp"
 #include "atlas/matching3d.hpp"
 #include "atlas/odometry3d.hpp"
+#include "atlas/posegraph3d.hpp"
+#include "atlas/loopclosure3d.hpp"
 #include "atlas/planner.hpp"
 #include "atlas/simulation.hpp"
 #include "atlas/tracker.hpp"
@@ -1725,6 +1727,272 @@ int main() {
               "plot: names are escaped");
         rejects([] { trajectorySvg({{"empty", "#000", {}}}, "t"); }, "plot: no points");
         rejects([] { trajectorySvg({{"nan", "#000", {{0, NAN}}}}, "t"); }, "plot: nonfinite point");
+    }
+    // ---- Pose graph (3D) ----
+    {
+        const auto yawPose = [](double x, double y, double z, double yaw, double roll = 0) {
+            Pose3D p = composePoses3D(rotationFromVector({0, 0, yaw}), rotationFromVector({roll, 0, 0}));
+            p.t = {x, y, z};
+            return p;
+        };
+        // Residual = the extra motion D when to = from * measured * D.
+        const Pose3D from = yawPose(3, -2, 1, 0.7, 0.1), measured = yawPose(1.5, 0.2, 0.05, 0.3);
+        const Pose3D D = yawPose(0.04, -0.02, 0.01, 0.015);
+        const auto r = edgeResidual3D(from, composePoses3D(composePoses3D(from, measured), D), measured);
+        const Point3D dw = rotationVector(D);
+        check(std::abs(r[0] - 0.04) < 1e-12 && std::abs(r[1] + 0.02) < 1e-12 && std::abs(r[2] - 0.01) < 1e-12 &&
+              std::abs(r[3] - dw.x) < 1e-12 && std::abs(r[4] - dw.y) < 1e-12 && std::abs(r[5] - dw.z) < 1e-12,
+              "pose graph: an edge's residual is the extra motion beyond the measurement");
+
+        // Cholesky on a known system; a matrix that is not positive definite is refused.
+        std::vector<double> x;
+        check(solveCholesky({4, 2, 0, 2, 3, 1, 0, 1, 2}, {2, 5, 3}, 3, x) && std::abs(x[0] + 1.0 / 3) < 1e-12 &&
+              std::abs(x[1] - 5.0 / 3) < 1e-12 && std::abs(x[2] - 2.0 / 3) < 1e-12, "pose graph: Cholesky solves A x = b");
+        check(!solveCholesky({1, 2, 2, 1}, {1, 1}, 2, x), "pose graph: Cholesky refuses an indefinite matrix");
+
+        // A loop: 40 poses on a 20 m circle, gently rising and falling.
+        const std::size_t N = 40;
+        std::vector<Pose3D> truth;
+        for (std::size_t k = 0; k < N; ++k) {
+            const double a = 2 * std::acos(-1.0) * static_cast<double>(k) / N;
+            truth.push_back(yawPose(20 * std::sin(a), 20 * (1 - std::cos(a)), 0.5 * std::sin(2 * a), a));
+        }
+        const auto ate = [&](const std::vector<Pose3D>& est) {  // RMS position error against the truth
+            double s = 0;
+            for (std::size_t k = 0; k < N; ++k) {
+                const Point3D d{est[k].t.x - truth[k].t.x, est[k].t.y - truth[k].t.y, est[k].t.z - truth[k].t.z};
+                s += d.x * d.x + d.y * d.y + d.z * d.z;
+            }
+            return std::sqrt(s / N);
+        };
+        // Odometry: each true step, with a heading bias of 0.4 deg per step and a
+        // little noise (seeded), chained into an initial trajectory that drifts.
+        std::mt19937_64 rng(7);
+        std::normal_distribution<double> noise(0.0, 1.0);
+        std::vector<PoseGraphEdge3D> odometry;
+        std::vector<Pose3D> chained{truth[0]};
+        for (std::size_t k = 0; k + 1 < N; ++k) {
+            Pose3D step = relativePose3D(truth[k], truth[k + 1]);
+            step = composePoses3D(step, yawPose(0.01 * noise(rng), 0.01 * noise(rng), 0.005 * noise(rng),
+                                                0.4 * std::acos(-1.0) / 180 + 0.0005 * noise(rng)));
+            odometry.push_back({k, k + 1, step, 100, 1e4});  // sigma 10 cm, 0.01 rad
+            chained.push_back(orthonormalized(composePoses3D(chained.back(), step)));
+        }
+        const double before = ate(chained);
+
+        // Consistent measurements: nothing to fix.
+        std::vector<PoseGraphEdge3D> exact;
+        for (std::size_t k = 0; k + 1 < N; ++k) exact.push_back({k, k + 1, relativePose3D(truth[k], truth[k + 1]), 100, 1e4});
+        exact.push_back({N - 1, 0, relativePose3D(truth[N - 1], truth[0]), 1e4, 1e6});
+        const PoseGraphResult still = optimizePoseGraph3D(truth, exact);
+        check(still.final_cost < 1e-12 && ate(still.poses) < 1e-9, "pose graph: consistent measurements leave the poses alone");
+
+        // With a trusted loop closure (last pose seen again from the first):
+        std::vector<PoseGraphEdge3D> closed = odometry;
+        closed.push_back({N - 1, 0, relativePose3D(truth[N - 1], truth[0]), 1e4, 1e6});  // sigma 1 cm, 1 mrad
+        const PoseGraphResult fixed = optimizePoseGraph3D(chained, closed);
+        const auto loop = edgeResidual3D(fixed.poses[N - 1], fixed.poses[0], closed.back().measured);
+        double worst_orthonormality = 0;
+        for (const Pose3D& p : fixed.poses) worst_orthonormality = std::max(worst_orthonormality, orthonormalityError(p));
+        std::cout << "  pose graph loop: drift " << before << " m RMS before, " << ate(fixed.poses) << " m after, "
+                  << fixed.iterations << " iterations\n";
+        check(before > 2.0, "pose graph: biased odometry drifts metres around the loop");
+        check(fixed.converged && fixed.final_cost < fixed.initial_cost, "pose graph: optimization converges and lowers the cost");
+        check(ate(fixed.poses) < 0.25 * before, "pose graph: one loop closure removes most of the drift");
+        check(std::hypot(loop[0], loop[1], loop[2]) < 0.05, "pose graph: the optimized loop agrees with the loop measurement");
+        check(std::abs(fixed.poses[0].t.x - truth[0].t.x) < 1e-15 && fixed.poses[0].r == truth[0].r,
+              "pose graph: the first pose stays fixed");
+        check(worst_orthonormality < 1e-9, "pose graph: optimized poses are proper rotations");
+
+        // A wrong loop (claims the end is 8 m from where it is) bends the map badly.
+        std::vector<PoseGraphEdge3D> wrong = odometry;
+        Pose3D bad = relativePose3D(truth[N - 1], truth[0]);
+        bad.t.x += 8;
+        wrong.push_back({N - 1, 0, bad, 1e4, 1e6});
+        check(ate(optimizePoseGraph3D(chained, wrong).poses) > 3 * ate(fixed.poses),
+              "pose graph: a wrong loop closure leaves the map much worse than a right one");
+
+        // Weights mean "trust": two disagreeing measurements of one motion give their
+        // weighted average, in translation (1.0 m with weight 3, 2.0 m with weight 1)
+        // and in rotation (0.10 rad with weight 3, 0.02 rad with weight 1).
+        const PoseGraphResult avg = optimizePoseGraph3D({Pose3D{}, yawPose(0, 0, 0, 0)},
+            {{0, 1, yawPose(1.0, 0, 0, 0.10), 3, 3}, {0, 1, yawPose(2.0, 0, 0, 0.02), 1, 1}});
+        const double yaw1 = rotationVector(avg.poses[1]).z;
+        std::cout << "  pose graph weights: x " << avg.poses[1].t.x << " m, yaw " << yaw1 << " rad\n";
+        check(std::abs(yaw1 - 0.08) < 2e-3, "pose graph: rotation follows the rotation weights (weighted average)");
+        check(std::abs(avg.poses[1].t.x - 1.25) < 0.02, "pose graph: translation follows the translation weights");
+        rejects([&] { optimizePoseGraph3D({}, {}); }, "pose graph: no poses");
+        rejects([&] { optimizePoseGraph3D(truth, {{0, N, Pose3D{}}}); }, "pose graph: edge index out of range");
+        rejects([&] { optimizePoseGraph3D(truth, {{3, 3, Pose3D{}}}); }, "pose graph: edge from a pose to itself");
+        rejects([&] { optimizePoseGraph3D(truth, {{0, 1, Pose3D{}, -1, 1}}); }, "pose graph: negative weight");
+    }
+    // ---- Keyframes and loop candidates ----
+    {
+        const auto at = [](double x, double y, double yaw = 0) {
+            Pose3D p = rotationFromVector({0, 0, yaw});
+            p.t = {x, y, 0};
+            return p;
+        };
+        std::vector<Pose3D> line;
+        for (int i = 0; i <= 100; ++i) line.push_back(at(0.5 * i, 0));
+        for (int i = 0; i < 20; ++i) line.push_back(line.back());  // standing still
+        const auto keys = selectKeyframes(line);
+        check(keys.size() == 11 && keys[1] == 10 && keys.back() == 100, "keyframes: every 5 m on a straight road; none while standing still");
+        std::vector<Pose3D> spin;
+        for (int i = 0; i <= 12; ++i) spin.push_back(at(0, 0, 0.05 * i));
+        const auto turns = selectKeyframes(spin);
+        check(turns.size() == 3 && turns[1] == 6 && turns[2] == 12, "keyframes: every 15 degrees when turning in place");
+        const auto lengths = pathLengths(line);
+        check(std::abs(lengths[100] - 50) < 1e-12 && lengths.back() == lengths[100], "keyframes: path length counts metres travelled");
+
+        const auto candidatesOf = [](const std::vector<Pose3D>& poses) {
+            const auto k = selectKeyframes(poses);
+            const auto len = pathLengths(poses);
+            std::vector<Pose3D> kp;
+            std::vector<double> kl;
+            for (std::size_t i : k) { kp.push_back(poses[i]); kl.push_back(len[i]); }
+            return findLoopCandidates(kp, kl);
+        };
+        check(candidatesOf(line).empty(), "loop candidates: none on a straight road");
+        // A 20 m circle (126 m around), sampled every 0.5 m: a loop only where it closes.
+        std::vector<Pose3D> circle;
+        for (int i = 0; i <= 252; ++i) {
+            const double a = 0.5 * i / 20;
+            circle.push_back(at(20 * std::sin(a), 20 * (1 - std::cos(a)), a));
+        }
+        const auto ring = candidatesOf(circle);
+        bool all_closing = !ring.empty();
+        for (const auto& c : ring) all_closing = all_closing && c.path_gap > 100 && c.distance <= 10;
+        check(all_closing, "loop candidates: on a circle, only where it closes");
+        // Out 100 m and back along a parallel lane 3 m away: the return revisits the way out.
+        std::vector<Pose3D> street;
+        for (int i = 0; i <= 200; ++i) street.push_back(at(0.5 * i, 0));
+        for (int i = 0; i <= 200; ++i) street.push_back(at(100 - 0.5 * i, 3, std::acos(-1.0)));
+        const auto back = candidatesOf(street);
+        bool parallel = back.size() >= 10;
+        for (const auto& c : back) parallel = parallel && std::abs(c.distance - 3) < 2.6 && c.path_gap >= 50;
+        check(parallel, "loop candidates: an out-and-back street pairs the way back with the way out");
+        rejects([] { findLoopCandidates({Pose3D{}}, {}); }, "loop candidates: one path length per keyframe");
+        rejects([] { selectKeyframes({Pose3D{}}, {0, 1}); }, "keyframes: positive thresholds");
+    }
+    // ---- Loop verification ----
+    {
+        const double PI = std::acos(-1.0);
+        // An urban block, freshly sampled per scan (a laser never hits the same
+        // spots twice): road, building faces of different lengths and setbacks,
+        // poles. `layout` picks the block, so a second layout is a different street.
+        const auto block = [&](int layout, unsigned seed) {
+            std::mt19937_64 g(seed);
+            std::uniform_real_distribution<double> u(0, 1);
+            std::vector<Point3D> pts;
+            for (int i = 0; i < 8000; ++i) pts.push_back({-40 + 80 * u(g), -20 + 40 * u(g), -1.7});
+            struct Face { double x0, y0, x1, y1; };
+            const std::vector<Face> faces = layout == 0
+                ? std::vector<Face>{{-35, 9, 5, 9}, {8, 12, 30, 12}, {-30, -10, 12, -10}, {16, -14, 35, -14}, {5, 9, 8, 12}, {12, -10, 16, -14}, {22, 12, 22, 20}}
+                : std::vector<Face>{{-35, 6, 35, 6}, {-35, -6, 35, -6}};  // a plain straight street
+            for (const Face& f : faces)
+                for (int i = 0; i < 2500; ++i) {
+                    const double t = u(g);
+                    pts.push_back({f.x0 + t * (f.x1 - f.x0), f.y0 + t * (f.y1 - f.y0), -1.7 + 6 * u(g)});
+                }
+            const std::vector<Point3D> poles = layout == 0 ? std::vector<Point3D>{{3, 6, 0}, {-12, -7, 0}, {18, 8, 0}, {26, -9, 0}}
+                                                           : std::vector<Point3D>{{0, 4, 0}, {20, -4, 0}};
+            for (const Point3D& c : poles)
+                for (int i = 0; i < 400; ++i) {
+                    const double a = 2 * PI * u(g);
+                    pts.push_back({c.x + 0.2 * std::cos(a), c.y + 0.2 * std::sin(a), -1.7 + 4 * u(g)});
+                }
+            return pts;
+        };
+        const auto seenFrom = [](const std::vector<Point3D>& world, const Pose3D& sensor) {
+            return transformPoints(world, inversePose3D(sensor));
+        };
+        // The earlier place: three scans around the origin make the local map.
+        std::vector<std::vector<Point3D>> scans;
+        std::vector<Pose3D> poses;
+        for (int k = 0; k < 3; ++k) {
+            Pose3D p;
+            p.t = {1.5 * (k - 1), 0, 0};
+            poses.push_back(p);
+            scans.push_back(seenFrom(block(0, 100 + k), p));
+        }
+        const std::vector<Point3D> submap = buildSubmap(scans, poses, poses[1], 0.25);
+        // buildSubmap places each scan with its pose: one point seen from two poses lands in one place.
+        Pose3D a, b;
+        a.t = {2, 0, 0};
+        b = rotationFromVector({0, 0, 0.5});
+        b.t = {-1, 3, 0};
+        const auto placed = buildSubmap({{transformPoint3D({5, 1, 0}, inversePose3D(a))}, {transformPoint3D({5, 1, 0}, inversePose3D(b))}},
+                                        {a, b}, Pose3D{}, 0.01);
+        check(placed.size() == 1 && std::abs(placed[0].x - 5) < 1e-9 && std::abs(placed[0].y - 1) < 1e-9,
+              "loop verification: the local map puts every scan's points in one frame");
+
+        // The later visit: 6 m on, 1.5 m left, turned 0.25 rad. Odometry's guess is
+        // off by 0.9 m, 0.6 m and 0.05 rad (drift after a long loop).
+        Pose3D truth = rotationFromVector({0, 0, 0.25});
+        truth.t = {6, 1.5, 0.2};
+        Pose3D guess = rotationFromVector({0, 0, 0.30});
+        guess.t = {6.9, 0.9, 0.2};
+        const LoopVerification ok = verifyLoop(submap, seenFrom(block(0, 200), truth), guess);
+        const Pose3D err = relativePose3D(truth, ok.relative);
+        const double err_m = std::sqrt(err.t.x * err.t.x + err.t.y * err.t.y + err.t.z * err.t.z);
+        std::cout << "  loop verification: same place accepted=" << ok.accepted << " inliers " << ok.inlier_fraction
+                  << " rmse " << ok.rmse << " m, error " << err_m << " m " << rotationAngle(err) * 180 / PI << " deg\n";
+        check(ok.accepted, "loop verification: a true revisit with a drifted guess is accepted");
+        check(err_m < 0.05 && rotationAngle(err) < 0.005, "loop verification: and its relative pose is right (5 cm, 0.3 deg)");
+        // A different street, same guess: must be rejected.
+        const LoopVerification wrong = verifyLoop(submap, seenFrom(block(1, 300), truth), guess);
+        std::cout << "  loop verification: different street accepted=" << wrong.accepted << " inliers " << wrong.inlier_fraction
+                  << " (" << wrong.reason << ")\n";
+        check(!wrong.accepted, "loop verification: a different street is rejected");
+        check(wrong.inlier_fraction < 0.3 && ok.inlier_fraction > 0.9,
+              "loop verification: structure fits at the same place, not on a different street");
+        const LoopVerification tiny = verifyLoop(submap, {{1, 1, 1}, {2, 2, 2}}, guess);
+        check(!tiny.accepted && std::string(tiny.reason) == "too few points", "loop verification: too few points is rejected");
+        rejects([] { buildSubmap({{}}, {}, Pose3D{}, 0.5); }, "loop verification: one pose per scan");
+    }
+    // ---- Loop closure over keyframes ----
+    {
+        // 400 frames around a 32 m circle (0.5 m apart); odometry with a heading
+        // bias of 0.1 deg per frame, chained into a drifting estimate.
+        const double PI = std::acos(-1.0);
+        std::vector<Pose3D> truth, estimate;
+        for (int i = 0; i < 400; ++i) {
+            const double a = 2 * PI * i / 400.0;
+            Pose3D p = rotationFromVector({0, 0, a});
+            p.t = {32 * std::sin(a), 32 * (1 - std::cos(a)), 0};
+            truth.push_back(p);
+        }
+        estimate.push_back(truth[0]);
+        Pose3D bias = rotationFromVector({0, 0, 0.1 * PI / 180});
+        for (int i = 1; i < 400; ++i)
+            estimate.push_back(orthonormalized(composePoses3D(estimate.back(), composePoses3D(relativePose3D(truth[i - 1], truth[i]), bias))));
+        const auto rms = [&](const std::vector<Pose3D>& e) {
+            double s2 = 0;
+            for (std::size_t i = 0; i < e.size(); ++i) {
+                const double dx = e[i].t.x - truth[i].t.x, dy = e[i].t.y - truth[i].t.y, dz = e[i].t.z - truth[i].t.z;
+                s2 += dx * dx + dy * dy + dz * dz;
+            }
+            return std::sqrt(s2 / static_cast<double>(e.size()));
+        };
+        const std::vector<std::size_t> keys = selectKeyframes(estimate);
+        const std::size_t last = keys.back();
+        const std::vector<LoopEdge> loops{{0, last, relativePose3D(truth[0], truth[last])}};
+        const LoopClosureResult closed = closeLoops(estimate, keys, loops);
+        std::cout << "  loop closure: " << keys.size() << " keyframes, drift " << rms(estimate) << " m RMS before, "
+                  << rms(closed.poses) << " m after\n";
+        check(rms(closed.poses) < 0.25 * rms(estimate), "loop closure: one verified loop removes most of the drift, over every frame");
+        // Frames between keyframes move rigidly with their keyframe.
+        const std::size_t k1 = keys[3], mid = keys[3] + 2;
+        const Pose3D before = relativePose3D(estimate[k1], estimate[mid]), after = relativePose3D(closed.poses[k1], closed.poses[mid]);
+        check(std::abs(before.t.x - after.t.x) < 1e-9 && std::abs(rotationAngle(relativePose3D(before, after))) < 1e-9,
+              "loop closure: frames between keyframes keep their place relative to their keyframe");
+        const LoopClosureResult none = closeLoops(estimate, keys, {});
+        bool same = none.poses.size() == estimate.size();
+        for (std::size_t i = 0; same && i < estimate.size(); ++i) same = none.poses[i].t.x == estimate[i].t.x && none.poses[i].r == estimate[i].r;
+        check(same, "loop closure: with no loops the trajectory is unchanged");
+        rejects([&] { closeLoops(estimate, keys, {{0, keys[2] + 1, Pose3D{}}}); }, "loop closure: loop frames must be keyframes");
+        rejects([&] { closeLoops(estimate, {1, 5}, {}); }, "loop closure: keyframes start at frame 0");
     }
     if (failures) return EXIT_FAILURE;
     std::cout << "All geometry, simulation, matching, and motion checks passed.\n";

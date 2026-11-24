@@ -13,12 +13,19 @@
 //       One scan-to-map run, streaming (read a scan, process it, discard it); prints one JSON line.
 //       Keys: voxel (m, 1.0), max_range (m, 100), deskew (0/1, 1), correct (0/1, 1), frames (all),
 //       diag (path: per-frame CSV of ICP diagnostics for the replay explorer; off by default).
+//   atlas_kitti loops   <odometry_dir> <seq> <estimate.txt> [keyframe_m=5] [radius_m=10] [min_gap_m=50]
+//       Keyframes and loop candidates found in the ESTIMATE; each graded against the answer key.
+//   atlas_kitti verify-loops <odometry_dir> <seq> <velodyne_dir> <estimate.txt> [radius_m=10] [half_window=10]
+//       Verifies each loop candidate (and a decoy for each) with ICP; grades against the answer key.
+//   atlas_kitti close-loops <odometry_dir> <seq> <estimate.txt> <loops.txt>
+//       Pose-graph loop closure with verified loops; scores before/after; saves results/atlas_<seq>_slam.txt.
 //   atlas_kitti export-replay <velodyne_dir> <estimate.txt> <out_dir> [scan_points=1000] [map_voxel=0.4] [map_range=50]
 //       Point data for the web replay explorer (see docs/replay.md): map.bin, Atlas's map built from
 //       its OWN estimated poses; scans.bin, a thinned copy of every scan in its sensor frame.
 // odometry_dir is .../odometry/dataset (poses/, sequences/); velodyne_dir holds 0000000000.bin ...
 #include "atlas/image.hpp"
 #include "atlas/kitti.hpp"
+#include "atlas/loopclosure3d.hpp"
 #include "atlas/matching3d.hpp"
 #include "atlas/odometry3d.hpp"
 #include "atlas/voxel.hpp"
@@ -31,7 +38,9 @@
 #include <fstream>
 #include <iostream>
 #include <cstdint>
+#include <sstream>
 #include <string>
+#include <tuple>
 #include <unordered_set>
 #include <vector>
 
@@ -372,6 +381,196 @@ int scoreCommand(int argc, char** argv) {
     printScore(argc == 6 ? argv[5] : argv[4], sc);
     return EXIT_SUCCESS;
 }
+// Loop candidates in an estimated trajectory. The search sees only the
+// estimate; the answer key is used afterwards to show how far apart the two
+// places really are ("same place": within 10 m, a fixed bar independent of the
+// search radius). Whether a candidate is a GOOD loop is decided later, by
+// whether the scans can be aligned correctly (verification).
+int loopsCommand(int argc, char** argv) {
+    const Sequence s = loadSequence(argv[2], argv[3]);
+    const std::vector<Pose3D> estimate = readKittiPoses(argv[4]);
+    if (estimate.size() > s.velodyne.size()) throw std::runtime_error("estimate has more poses than the ground truth");
+    KeyframeOptions ko;
+    LoopSearchOptions lo;
+    if (argc >= 6) ko.min_distance = std::stod(argv[5]);
+    if (argc >= 7) lo.max_distance = std::stod(argv[6]);
+    if (argc >= 8) lo.min_path_gap = std::stod(argv[7]);
+    const std::vector<std::size_t> keys = selectKeyframes(estimate, ko);
+    const std::vector<double> lengths = pathLengths(estimate);
+    std::vector<Pose3D> key_poses;
+    std::vector<double> key_lengths;
+    for (std::size_t k : keys) {
+        key_poses.push_back(estimate[k]);
+        key_lengths.push_back(lengths[k]);
+    }
+    const std::vector<LoopCandidate> found = findLoopCandidates(key_poses, key_lengths, lo);
+    std::printf("Sequence %s: %zu frames, %.0f m estimated path, %zu keyframes (every %.1f m or %.0f deg).\n"
+                "Loop candidates: earlier keyframe within %.1f m in the ESTIMATE, at least %.0f m back along the path.\n\n",
+                argv[3], estimate.size(), lengths.back(), keys.size(), ko.min_distance, ko.min_angle * 180 / std::acos(-1.0),
+                lo.max_distance, lo.min_path_gap);
+    std::printf("%-15s | %-10s | %-9s | %-26s\n", "frames", "estimated", "path gap", "true distance (answer key)");
+    const double same_place = 10.0;
+    std::size_t real = 0;
+    for (const LoopCandidate& c : found) {
+        const std::size_t a = keys[c.earlier], b = keys[c.later];
+        const Point3D ta = s.velodyne[a].t, tb = s.velodyne[b].t;
+        const double truth = std::sqrt((ta.x - tb.x) * (ta.x - tb.x) + (ta.y - tb.y) * (ta.y - tb.y) + (ta.z - tb.z) * (ta.z - tb.z));
+        real += truth <= same_place;
+        std::printf("%5zu -> %5zu  | %6.2f m   | %6.0f m  | %6.2f m%s\n", a, b, c.distance, c.path_gap, truth,
+                    truth <= same_place ? "   same place" : "");
+    }
+    std::printf("\n%zu candidates; %zu are the same place (within %.0f m) by the answer key.\n", found.size(), real, same_place);
+    return EXIT_SUCCESS;
+}
+
+// A scan as the odometry saw it: KITTI-corrected, then deskewed with the
+// estimated motion into it (frame 0 uses the motion out of it).
+std::vector<Point3D> preparedScan(const std::string& dir, const std::vector<Pose3D>& estimate, std::size_t i) {
+    const std::vector<Point3D> raw = correctKittiScan(readKittiScan(kittiScanPath(dir, i)).points);
+    const Pose3D motion = i > 0 ? relativePose3D(estimate[i - 1], estimate[i]) : relativePose3D(estimate[0], estimate[1]);
+    return deskewScan(raw, motion, SweepDirection::Clockwise);
+}
+
+// Verifies loop candidates on real scans and grades the relative poses against
+// the answer key. For each candidate it also verifies a decoy: the same later
+// scan paired with a far-away place (300 frames off), with the same guess, as
+// if the search had been fooled. Every decoy should be rejected.
+int verifyLoopsCommand(int argc, char** argv) {
+    const Sequence s = loadSequence(argv[2], argv[3]);
+    const std::string dir = argv[4];
+    const std::vector<Pose3D> estimate = readKittiPoses(argv[5]);
+    LoopSearchOptions lo;
+    if (argc >= 7) lo.max_distance = std::stod(argv[6]);
+    const std::size_t half = argc >= 8 ? std::stoul(argv[7]) : 10;
+    const std::vector<std::size_t> keys = selectKeyframes(estimate);
+    const std::vector<double> lengths = pathLengths(estimate);
+    std::vector<Pose3D> key_poses;
+    std::vector<double> key_lengths;
+    for (std::size_t k : keys) {
+        key_poses.push_back(estimate[k]);
+        key_lengths.push_back(lengths[k]);
+    }
+    const auto submapAround = [&](std::size_t a) {
+        std::vector<std::vector<Point3D>> scans;
+        std::vector<Pose3D> poses;
+        for (std::size_t i = a > half ? a - half : 0; i <= std::min(estimate.size() - 1, a + half); ++i) {
+            scans.push_back(preparedScan(dir, estimate, i));
+            poses.push_back(estimate[i]);
+        }
+        return buildSubmap(scans, poses, estimate[a], 0.25);
+    };
+    const auto poseError = [](const Pose3D& a, const Pose3D& b) {
+        const Pose3D d = relativePose3D(a, b);
+        return std::make_pair(std::sqrt(d.t.x * d.t.x + d.t.y * d.t.y + d.t.z * d.t.z), rotationAngle(d) * 180 / std::acos(-1.0));
+    };
+    std::printf("Sequence %s: loop candidates within %.0f m (estimate), local maps of %zu scans each side.\n"
+                "Errors are against the answer key's relative pose: the odometry guess, then the verified result.\n\n",
+                argv[3], lo.max_distance, half);
+    std::printf("%-12s | %-8s | %-6s | %-7s | %-18s | %-18s | %s\n", "frames", "verdict", "fit", "rms", "guess error",
+                "verified error", "reason");
+    std::size_t accepted = 0, decoys_accepted = 0, n = 0, bad_accepted = 0;
+    // Accepted loops, for the pose graph: earlier later, then 12 numbers (later in earlier's frame), fit.
+    const std::string loops_path = "results/loops_" + std::string(argv[3]) + ".txt";
+    std::FILE* loops_file = std::fopen(loops_path.c_str(), "w");
+    if (!loops_file) throw std::runtime_error("cannot write " + loops_path);
+    for (const LoopCandidate& c : findLoopCandidates(key_poses, key_lengths, lo)) {
+        const std::size_t later = keys[c.later];
+        const std::vector<Point3D> scan = preparedScan(dir, estimate, later);
+        for (int decoy = 0; decoy < 2; ++decoy) {
+            const std::size_t earlier = decoy ? (keys[c.earlier] + 300) % later : keys[c.earlier];
+            const Pose3D guess = relativePose3D(estimate[keys[c.earlier]], estimate[later]);  // decoys keep the same guess
+            const auto t0 = std::chrono::steady_clock::now();
+            const LoopVerification v = verifyLoop(submapAround(earlier), scan, guess);
+            const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+            const Pose3D truth = relativePose3D(s.velodyne[earlier], s.velodyne[later]);
+            const auto ge = poseError(truth, guess), ve = poseError(truth, v.relative);
+            char frames[32];
+            std::snprintf(frames, sizeof frames, "%zu->%zu%s", earlier, later, decoy ? "*" : "");
+            const Pose3D d = relativePose3D(truth, v.relative);  // verified error, in the later scan's own axes
+            char axes[64] = "";
+            if (!decoy) std::snprintf(axes, sizeof axes, " [fwd %+.2f left %+.2f up %+.2f]", d.t.x, d.t.y, d.t.z);
+            std::printf("%-12s | %-8s | %5.1f%% | %5.3f m | %5.2f m %6.2f deg | %5.2f m %6.2f deg%s | %s%s\n", frames,
+                        v.accepted ? "accept" : "reject", 100 * v.inlier_fraction, v.rmse, ge.first, ge.second, ve.first,
+                        ve.second, axes, v.accepted ? "" : v.reason, decoy ? "  (decoy)" : "");
+            (void)ms;
+            if (decoy) decoys_accepted += v.accepted;
+            else {
+                if (v.accepted) {
+                    const Pose3D& r = v.relative;
+                    std::fprintf(loops_file, "%zu %zu %.9f %.9f %.9f %.9f %.9f %.9f %.9f %.9f %.9f %.9f %.9f %.9f %.4f\n", earlier,
+                                 later, r.r[0], r.r[1], r.r[2], r.t.x, r.r[3], r.r[4], r.r[5], r.t.y, r.r[6], r.r[7], r.r[8], r.t.z,
+                                 v.inlier_fraction);
+                }
+                ++n;
+                accepted += v.accepted;
+                bad_accepted += v.accepted && (ve.first > 0.3 || ve.second > 1.0);
+            }
+        }
+    }
+    std::fclose(loops_file);
+    std::printf("\nAccepted loops saved to %s.\n", loops_path.c_str());
+    std::printf("\n%zu of %zu candidates accepted (%zu of them more than 0.3 m or 1 deg from the truth); %zu of %zu decoys "
+                "accepted.\n* = decoy: the later scan paired with a place 300 frames away, with the real candidate's guess.\n",
+                accepted, n, bad_accepted, decoys_accepted, n);
+    return EXIT_SUCCESS;
+}
+
+// Loop closure with verified loops (from verify-loops), scored against the
+// answer key before and after. Position error is measured in the frame of
+// scan 0, where estimate and answer key both start (no alignment).
+int closeLoopsCommand(char** argv) {
+    const Sequence s = loadSequence(argv[2], argv[3]);
+    const Pose3D tr = readKittiVelodyneInCamera(std::string(argv[2]) + "/sequences/" + argv[3] + "/calib.txt");
+    const std::vector<Pose3D> estimate = readKittiPoses(argv[4]);
+    if (estimate.size() > s.velodyne.size()) throw std::runtime_error("estimate has more poses than the ground truth");
+    std::vector<LoopEdge> loops;
+    std::ifstream in(argv[5]);
+    if (!in) throw std::runtime_error(std::string("cannot read ") + argv[5]);
+    for (std::string line; std::getline(in, line);) {
+        if (line.empty()) continue;
+        std::istringstream row(line);
+        LoopEdge l;
+        double v[12], fit;
+        row >> l.earlier_frame >> l.later_frame;
+        for (double& x : v) row >> x;
+        row >> fit;
+        if (!row) throw std::runtime_error("bad loop line: " + line);
+        l.relative.r = {v[0], v[1], v[2], v[4], v[5], v[6], v[8], v[9], v[10]};
+        l.relative.t = {v[3], v[7], v[11]};
+        loops.push_back(l);
+    }
+    const std::vector<std::size_t> keys = selectKeyframes(estimate);
+    const auto t0 = std::chrono::steady_clock::now();
+    const LoopClosureResult closed = closeLoops(estimate, keys, loops);
+    const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    const auto positions = [&](const std::vector<Pose3D>& e) {
+        double s2 = 0, worst = 0;
+        std::size_t at = 0;
+        for (std::size_t i = 0; i < e.size(); ++i) {
+            const Point3D t = s.velodyne[i].t;
+            const double d2 = (e[i].t.x - t.x) * (e[i].t.x - t.x) + (e[i].t.y - t.y) * (e[i].t.y - t.y) + (e[i].t.z - t.z) * (e[i].t.z - t.z);
+            s2 += d2;
+            if (d2 > worst * worst) { worst = std::sqrt(d2); at = i; }
+        }
+        return std::make_tuple(std::sqrt(s2 / static_cast<double>(e.size())), worst, at);
+    };
+    std::printf("Sequence %s: %zu keyframes, %zu verified loops; pose graph %zu iterations, cost %.1f -> %.1f, %.0f ms.\n\n",
+                argv[3], keys.size(), loops.size(), closed.graph.iterations, closed.graph.initial_cost, closed.graph.final_cost, ms);
+    std::printf("%-26s | %-12s | %-17s | %-10s | %-12s | %s\n", "", "position RMS", "worst (frame)", "end error", "KITTI t_err", "r_err");
+    for (int k = 0; k < 2; ++k) {
+        const std::vector<Pose3D>& e = k ? closed.poses : estimate;
+        const auto [rms, worst, at] = positions(e);
+        const Score sc = scoreTrajectory(s, tr, e);
+        std::printf("%-26s | %8.3f m   | %6.2f m (%4zu)    | %6.2f m   | %8.2f %%   | %.2f d/100m\n",
+                    k ? "after loop closure" : "odometry (before)", rms, worst, at, sc.comparison.end_error,
+                    sc.metric.translation_percent, sc.metric.rotation_deg_per_100m);
+    }
+    const std::string out = "results/atlas_" + std::string(argv[3]) + "_slam.txt";
+    writeKittiPoses(out, closed.poses);
+    std::printf("\nPosition error: against the answer key in scan 0's frame (both start there), every frame.\nSaved %s.\n", out.c_str());
+    return EXIT_SUCCESS;
+}
+
 // One configured scan-to-map run for the evaluation workers (eval/). The
 // output is a single JSON line so a program can read it; poses go to a file.
 int runCommand(int argc, char** argv) {
@@ -547,6 +746,9 @@ int main(int argc, char** argv) {
         if (cmd == "plot" && argc >= 7 && argc % 2 == 1) return plotCommand(argc, argv);
         if (cmd == "run" && argc >= 6) return runCommand(argc, argv);
         if (cmd == "export-replay" && argc >= 5) return exportReplayCommand(argc, argv);
+        if (cmd == "loops" && argc >= 5 && argc <= 8) return loopsCommand(argc, argv);
+        if (cmd == "verify-loops" && argc >= 6 && argc <= 8) return verifyLoopsCommand(argc, argv);
+        if (cmd == "close-loops" && argc == 6) return closeLoopsCommand(argv);
     } catch (const std::exception& e) {
         std::cerr << "error: " << e.what() << '\n';
         return EXIT_FAILURE;
@@ -560,6 +762,9 @@ int main(int argc, char** argv) {
                  "  atlas_kitti score <odometry_dir> <seq> <estimate_velodyne.txt> [name]\n"
                  "  atlas_kitti plot <odometry_dir> <seq> <out.svg> <estimate.txt> <name> [<estimate.txt> <name> ...]\n"
                  "  atlas_kitti run <odometry_dir> <seq> <velodyne_dir> <out_poses.txt> [voxel=1 max_range=100 deskew=1 correct=1 frames=N diag=file]\n"
+                 "  atlas_kitti loops <odometry_dir> <seq> <estimate.txt> [keyframe_m=5 radius_m=10 min_gap_m=50]\n"
+                 "  atlas_kitti verify-loops <odometry_dir> <seq> <velodyne_dir> <estimate.txt> [radius_m=10 half_window=10]\n"
+                 "  atlas_kitti close-loops <odometry_dir> <seq> <estimate.txt> <loops.txt>\n"
                  "  atlas_kitti export-replay <velodyne_dir> <estimate.txt> <out_dir> [scan_points=1000 map_voxel=0.4 map_range=50]\n";
     return EXIT_FAILURE;
 }
