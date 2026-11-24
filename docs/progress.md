@@ -546,6 +546,90 @@ run yet. Not comparable to published numbers (those use compensated scans).
 Point-to-plane 3D ICP; success test set in advance: `icp-from-truth` stops
 walking away, then rerun the odometry.
 
+## 2026-11-23 (session 2) — scan-to-map odometry matches KISS-ICP on sequence 04
+
+### Implemented
+
+- KITTI scan correction; local voxel map; robust map ICP; scan-to-map
+  odometry with adaptive threshold (KISS-ICP's design, Atlas's code);
+  devkit metric; KISS-ICP 1.3.0 baseline script (isolated venv outside the
+  repo); `score` command; profile and memory; bulk scan reading.
+
+### Lessons
+
+- Reading KISS-ICP's source beat guessing: it is point-to-point too; its gains
+  come from the local map, robust weights and adaptive threshold. My plan to
+  build point-to-plane next would have been the wrong step.
+- A divergence that looked like a deskew bug was floating-point rounding
+  amplified 2.5x per frame by a compose/inverse feedback loop (transpose as
+  inverse). A synthetic turning-sensor test cleared deskewing; printing the
+  orthonormality error per frame found the cause.
+- Verify ports against the original: the metric was checked against the
+  devkit's own functions; the scan correction against KISS-ICP's to 1e-14.
+- Profile before optimizing: 62 % nearest neighbors (expected), 11 % reading
+  files one char at a time (a mistake, fixed 8.6x).
+
+### Validation
+
+Sequence 04: Atlas 0.48 % t_err, 0.12 deg/100 m, end 1.49 m, 1.7 cm per-frame
+median, 43 ms per scan one thread, 79 MB; KISS-ICP 0.41 %, 0.19 deg/100 m,
+0.48 m, 2.5 cm, 71 ms one thread / 19 ms all cores, 148 MB. Removing deskew
+or the correction: 1.07 % / 2.05 % end drift. Voxel 0.75/1.0/1.5 m: 0.48 /
+0.48 / 0.52 %. New unit tests and deliberate breaks for each piece.
+
+### Limitations
+
+One sequence (394 m, country road), design and defaults from KISS-ICP, no
+held-out check yet. Odometry, not SLAM. Single-threaded.
+
+### Next smallest step
+
+Download a second sequence (07: raw drive 2011_09_30_drive_0027, urban,
+frames 0-1100) and run Atlas and KISS-ICP on it with no changes.
+
+## 2026-11-24 — held-out sequence 07: Phase 3 done
+
+### Implemented
+
+- Downloaded and extracted sequence 07 (raw drive `2011_09_30_drive_0027`,
+  1101 frames, 694 m urban loop); scans and GPS only.
+- `trajectorySvg()` (image module) and `atlas_kitti plot`: top-down paths of
+  estimates over the ground truth, equal axes, oriented like the bird's-eye
+  images. Plots for sequences 04 and 07 in `results/` (not in Git).
+
+### Lessons
+
+- A held-out check is only honest if nothing changes: same commands, same
+  defaults, both methods, decided before the data arrived.
+- End error flatters a loop: sequence 07 returns near its start, so
+  scan-to-map's 0.80 m end error (0.12 %) hides a 0.43 % segment drift.
+- Measure memory with the program shape that matters: the evaluation CLI
+  peaks at 1.2 GB because it keeps every scan; streaming odometry needs 106 MB.
+- Check the date in a KITTI drive name: `2011_09_26_drive_0027` is a
+  different drive from `2011_09_30_drive_0027` and has no ground truth.
+
+### Validation
+
+Sequence 07, no changes: Atlas scan-to-map 0.43 % t_err, 0.25 deg/100 m,
+end 0.80 m, 1.9 cm per-frame median, 28 ms per scan median on one M4 core,
+106 MB; KISS-ICP 1.3.0 0.75 %, 0.37 deg/100 m, 0.72 m, 2.5 cm, 47 ms one
+thread / 15 ms all cores, 195 MB. Atlas scan-to-scan 6.32 % raw, 5.46 %
+deskewed. Atlas's mean step error is lower than KISS-ICP's in all eleven
+100-frame blocks. Sequence 04 streaming rerun reproduced 43 ms and 78 MB.
+Plot tests pass; mirroring the plot fails two of them.
+
+### Limitations
+
+Two sequences, 1.1 km; one win each against KISS-ICP, so no ranking. The
+cause of KISS-ICP's larger error on 07 is not identified. Odometry, not SLAM.
+Raw scans, so not comparable to the official leaderboard.
+
+### Next smallest step
+
+Phase 4: a coordinator and workers that run (sequence, configuration) jobs
+like the two above, with leases, retries and durable, idempotent results.
+More sequences (e.g. a highway one) would make the Phase 4 sweep meaningful.
+
 ### Daily checkpoint template
 
 - Concept understood:

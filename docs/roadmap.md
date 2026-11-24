@@ -103,7 +103,7 @@ treat these as polish, per "protect Phase 3".
 Done when: a first-time visitor understands what to do within about 30 seconds,
 the UI stays smooth while the engine runs, and every view is labeled live/simulated.
 
-### Phase 3 — 3D LiDAR odometry on real data (target: weeks 3–6) — headline result
+### Phase 3 — 3D LiDAR odometry on real data (done 2026-11-24) — headline result
 
 Goal: credible, measured odometry on a public driving dataset (KITTI odometry first).
 
@@ -117,15 +117,22 @@ Goal: credible, measured odometry on a public driving dataset (KITTI odometry fi
 - Profiling before optimization; report latency per frame and memory.
 - New dependencies (e.g. Eigen) discussed and added only here, where needed.
 
-Status 2026-11-23: one raw drive (sequence 04) downloaded (the 80 GB set did
-not fit). Done: scan, pose, calibration, time readers; camera-to-Velodyne
-frames; voxel-hash nearest neighbors (instead of a k-d tree); point-to-point
-3D ICP (Gauss-Newton, no dependencies); scan-to-scan odometry; deskewing
-(clockwise, measured). Sequence 04: 4.0 to 6.5 % drift. Diagnosed: deskewing
-removes about a tenth of it; the rest is point-to-point bias from raised
-points (forward and heading) and road rings (backward). Next: point-to-plane,
-local map, KITTI segment metric, a second sequence, KISS-ICP on the same
-scans. Parameters so far were looked at on sequence 04 itself.
+Status 2026-11-23: one raw drive (sequence 04, 394 m) downloaded (the 80 GB
+set did not fit). Done: readers, frames, voxel-hash nearest neighbors
+(instead of a k-d tree), 3D ICP, deskewing (clockwise, measured), the KITTI
+scan correction, scan-to-map odometry (local map, robust kernel, adaptive
+threshold, following KISS-ICP's design), the devkit metric (checked against
+the devkit's own code), KISS-ICP 1.3.0 run on the same scans, profile and
+memory. Sequence 04: Atlas 0.48 % t_err, 0.12 deg/100 m, 43 ms per scan on one
+core, 79 MB; KISS-ICP 0.41 %, 0.19 deg/100 m. Point-to-plane was not needed
+(the local map removed the bias it was meant to fix). No external C++
+dependency was needed.
+
+Status 2026-11-24: done. Held-out sequence 07 (694 m urban loop), run with
+no changes: Atlas 0.43 %, 0.25 deg/100 m, 28 ms per scan, 106 MB; KISS-ICP
+0.75 %, 0.37 deg/100 m. One win each across the two sequences, so no
+ranking. Trajectory plots via `atlas_kitti plot`; results table, failure
+analysis and reproduce commands in `docs/kitti.md`.
 
 Done when: a results table with hardware/config, failure analysis, and plots is
 reproducible from documented commands.

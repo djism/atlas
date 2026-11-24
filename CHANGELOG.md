@@ -102,6 +102,22 @@
 - `atlas_kitti` CLI: `scan`, `truth`, `overlap`, `map`, `odometry`,
   `deskew-check`, `icp-from-truth`. Documented in `docs/kitti.md`.
 - `.gitignore`: `/Datasets/`.
+- Added `correctKittiScan()` (KITTI's 0.205 deg elevation correction),
+  `orthonormalized()`, `LocalMap3D`, `alignToMap()` (robust point-to-point),
+  `MapOdometry3D` (scan-to-map odometry: deskew, two thinnings, adaptive
+  threshold, local map), `kittiMetric()` (devkit metric), `cameraPoses()`,
+  `writeKittiPoses()`; `VoxelGrid3D` index and radius queries.
+- `atlas_kitti`: `score`; `odometry` now runs scan-to-scan and scan-to-map,
+  reports the KITTI metric, and saves poses. `tools/kiss_icp_baseline.py`.
+- Sequence 04: Atlas scan-to-map 0.48 % / 0.12 deg per 100 m vs KISS-ICP
+  0.41 % / 0.19 on the same raw scans.
+- Fixed: odometry poses lost orthonormality through a compose/inverse
+  feedback loop (rounding grew 2.5x per frame, diverging at frame 44).
+  `readKittiScan` now reads in one block (9.5 -> 1.1 ms per scan).
+- Added `trajectorySvg()` and `atlas_kitti plot` (estimated vs true paths,
+  top-down, equal axes).
+- Held-out sequence 07 (694 m, nothing changed): Atlas scan-to-map 0.43 % /
+  0.25 deg per 100 m, 28 ms per scan, 106 MB; KISS-ICP 0.75 % / 0.37. Phase 3 done.
 
 ## 0.1.0 — 2026-11-04
 

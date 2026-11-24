@@ -3,12 +3,14 @@
 **Learning vehicle motion estimation and SLAM through a C++ implementation.**
 
 Latest release: **v0.1.0 — 2D geometry and motion recovery with known correspondences.**
-In progress (unreleased, roadmap Phase 1 complete): least-squares alignment, point-to-point
+In progress (unreleased, roadmap Phases 1 and 3 complete): least-squares alignment, point-to-point
 and point-to-line 2D ICP, ray-cast LiDAR, scan tracking, an occupancy-grid map, scan-to-map
 localization with degeneracy handling, a scripted experiment, a simplified planner, a live
-browser sandbox running the C++ engine via WebAssembly, and (Phase 3, started) a first 3D LiDAR
-odometry on real KITTI data, measured against ground truth (4.0-7.0 % drift so far; see
-[KITTI](docs/kitti.md)).
+browser sandbox running the C++ engine via WebAssembly, and 3D LiDAR odometry on real KITTI
+data. On held-out sequence 07 (694 m, nothing tuned on it), Atlas's scan-to-map
+odometry scores **0.43 % KITTI translation error** against **0.75 % for KISS-ICP run on
+the same scans**; on sequence 04 it is 0.48 % against 0.41 %. One win each, so no ranking
+(see [KITTI](docs/kitti.md)).
 
 Given two observations of stationary landmarks, Atlas estimates the translation
 and rotation that express the second observation in the first sensor's frame.
@@ -16,9 +18,9 @@ The first milestone reproduces a controlled experiment: one meter forward and
 a ten-degree left turn.
 
 This is an educational foundation. It is not a complete SLAM system, any company's
-stack, or vehicle-ready software. Real-data odometry, robust matching, 3D mapping,
-loop closure, and distributed evaluation are planned work,
-not implemented features.
+stack, or vehicle-ready software. Its real-data result is odometry (no loop closure),
+on two KITTI sequences. Loop closure, full SLAM, and distributed evaluation are
+planned work, not implemented features.
 
 ## Build and run
 
@@ -123,7 +125,8 @@ has a shareable link. See [sandbox](docs/sandbox.md) to build and run it.
 | `src/` | Geometry, LiDAR simulation and noise, matching, ICP, tracking, planning; 3D poses, voxel grid, 3D ICP, scan odometry, KITTI readers, deskewing |
 | `apps/demo.cpp` | Reproducible known-pair, ICP, and mapping examples |
 | `apps/experiment.cpp` | Scripted tracker-vs-localizer experiment with failure flags |
-| `apps/kitti.cpp` | KITTI checks: scan facts and images, ground truth, overlap, maps, odometry, deskew and bias diagnostics |
+| `apps/kitti.cpp` | KITTI checks: scan facts and images, ground truth, overlap, maps, odometry, scoring (KITTI metric), deskew and bias diagnostics |
+| `tools/kiss_icp_baseline.py` | Runs the KISS-ICP baseline on the same raw scans (external package, not vendored) |
 | `tests/test_atlas.cpp` | Numerical and invalid-input checks |
 | `docs/frames.md` | Coordinate conventions and an explanation of the experiment |
 | `docs/alignment.md` | Multi-point alignment derivation, degeneracy, and limits |
@@ -199,10 +202,13 @@ commits or schedule unattended pushes.
       odometry, shareable links, deployed to GitHub Pages behind browser smoke
       tests; remaining polish: residual/inlier charts, exact replay, a test
       with first-time visitors
-- [ ] **Phase 3:** 3D LiDAR odometry on KITTI, measured against a baseline (headline result) —
-      started: KITTI readers and frame conversion, voxel grid, point-to-point 3D ICP,
-      scan-to-scan odometry and deskewing on sequence 04 (4.0 % drift at best); found the
-      remaining bias in point-to-point matching; next: point-to-plane, local map, baseline
+- [x] **Phase 3:** 3D LiDAR odometry on KITTI, measured against a baseline (headline result) —
+      readers and frames, voxel grid, 3D ICP, deskewing, KITTI correction,
+      scan-to-map odometry with a robust kernel and adaptive threshold, the devkit metric
+      (checked against the devkit's own code), KISS-ICP on the same scans, profile and memory.
+      Sequence 04: Atlas 0.48 % / 0.12 deg per 100 m, KISS-ICP 0.41 % / 0.19; 43 ms per scan on
+      one core, 79 MB. Held-out sequence 07 (694 m, no changes): Atlas 0.43 % / 0.25,
+      KISS-ICP 0.75 % / 0.37; one win each, so no ranking. Trajectory plots via `atlas_kitti plot`
 - [ ] **Phase 4:** distributed evaluation sweeps with leases, retries, idempotent results
 - [ ] **Phase 5:** replay explorer for real-data results
 - [ ] **Later:** loop closure and pose graph, a separate planner module,

@@ -30,6 +30,7 @@ recordings**, one drive at a time, keeping only what it needs:
 │   ├── velodyne_points/data/                  279 scans, 0000000000.bin ... 0000000278.bin
 │   ├── velodyne_points/timestamps{,_start,_end}.txt
 │   └── oxts/                                  GPS/IMU log
+├── raw/2011_09_30/2011_09_30_drive_0027_sync/ sequence 07 (held out): 1106 scans, oxts
 ├── odometry/dataset/poses/00.txt ... 10.txt   ground truth (04.txt: 271 poses)
 ├── odometry/dataset/sequences/NN/             calib.txt, times.txt
 └── devkit/                                    readme and official evaluation code
@@ -37,7 +38,12 @@ recordings**, one drive at a time, keeping only what it needs:
 
 The devkit readme maps benchmark sequences to raw drives. **Sequence 04 is
 `2011_09_30_drive_0016`, frames 000000-000270** (271 scans; the drive has 279,
-so frames 271-278 are outside the sequence).
+so frames 271-278 are outside the sequence). **Sequence 07 is
+`2011_09_30_drive_0027`, frames 000000-001100** (1101 scans of 1106), downloaded
+2026-11-24 as the held-out sequence (2.0 GB of scans and GPS kept; the 4.4 GB
+zip is not needed once extracted). The first download attempt was
+`2011_09_26_drive_0027`, a different drive with the same number: it is not a
+benchmark sequence and has no ground truth. Check the date in the name.
 
 Kept: 541 MB (scans 561 MB uncompressed in the zip listing = 535 MiB on disk,
 plus GPS, poses, calibration). Deleted after verifying byte counts: the zips
@@ -302,6 +308,170 @@ costs nothing. That is the next experiment.
 (14 values: the median here is the 7th; a scratch version that took the 8th
 gave +2.5 / -1.5 / +1.7 cm. Same pair counts, same conclusion.)
 
+## Scan-to-map odometry and the KISS-ICP baseline (Phase 3 result)
+
+### The baseline, run on the same scans
+
+KISS-ICP 1.3.0 (Vizzo et al., RA-L 2023, MIT license) was installed in a
+throwaway Python 3.11 environment outside the repo and run by
+`tools/kiss_icp_baseline.py` on the same raw scans, with its own KITTI
+correction and its own per-point timestamps (so it deskews), default settings.
+(Its KITTI odometry loader passes no timestamps, which suits the benchmark's
+compensated scans but would skip deskewing raw ones.) Its source showed its
+design: deskew with the last motion; thin twice (0.5 m for the map, 1.5 m to
+register); point-to-POINT ICP against a local voxel map (20 points per 1 m
+voxel, 100 m around the car) with Geman-McClure robust weights and an
+adaptive pairing distance (3 sigma, sigma learned from how far estimates
+move from their predictions). Its timestamp formula, -atan2(y, x), confirms
+the clockwise sweep measured above.
+
+### The metric, ported and checked
+
+`kittiMetric()` ports the devkit's `calcSequenceErrors`: segments of 100 to
+800 m (by ground-truth path length, "strictly longer than"), starting every
+10th frame; translation error as % of length, rotation error per length;
+scored in the camera frame (`cameraPoses()` = Tr * V * Tr^-1). The devkit's
+own functions, copied verbatim into a harness and fed KISS-ICP's poses
+converted to the camera frame in Python, give 43 segments, 0.4138 % and
+0.1902 deg/100 m; the port gives 43, 0.41 %, 0.19. Sequence 04 is 394 m, so
+only the 100, 200 and 300 m segments exist.
+
+### KITTI's scan correction
+
+KITTI's Velodyne has a known elevation-angle error of about 0.205 deg;
+KISS-ICP corrects every scan. `correctKittiScan()` rotates each point 0.205
+deg upward about p x z (range unchanged; road points rise about 3 cm, points
+at 80 m move 29 cm) and matches KISS-ICP's own function to 1e-14 m on a real
+scan. Alone it did not remove the scan-to-scan bias.
+
+### `MapOdometry3D`: the same design, implemented in Atlas
+
+`LocalMap3D` (capped voxels, far voxels removed), `alignToMap()` (robust
+point-to-point Gauss-Newton), `MapOdometry3D` (deskew, two thinnings,
+adaptive threshold, map update). Written from the published design, not
+copied code.
+
+**A bug worth remembering.** The first version diverged at frame 44 of
+sequence 04 (NaN poses). Per-frame rotation grew 1.5x per frame on a straight
+road. Cause: `relativePose3D` inverts a rotation by transposing it, exact only
+for perfect rotations, and this odometry computes each motion back from two
+poses and feeds it into the next guess. A rounding-sized flaw grew about 2.5x
+per frame (orthonormality error 0.008 at frame 36, 3.8 at frame 42: 2.5^36 *
+1e-16 ~ 0.01). Scan-to-scan odometry never had the loop (its motions came
+straight from ICP). Deskewing only amplified it; a synthetic turning-sensor
+test showed the deskew rotation itself is right (1 cm residual vs 1.2 m
+smear; the opposite sign gives 1.6 m). Fix: `orthonormalized()` (Gram-Schmidt)
+on the pose and motion every frame. Libraries such as Sophus store rotations
+as unit quaternions and renormalize, which is why KISS-ICP does not see this.
+
+### Results, sequence 04 (271 frames, 394 m, raw scans)
+
+`atlas_kitti odometry <odometry> 04 <velodyne_dir>` and `atlas_kitti score`;
+Apple M4, Apple clang 17 -O2:
+
+| Method | KITTI t_err | KITTI r_err | End error | Per-frame error (median) | Time per scan |
+| --- | --- | --- | --- | --- | --- |
+| Atlas scan-to-scan, raw | 3.89 % | 2.02 deg/100 m | 27.5 m | 4.2 cm | 50 ms, 1 thread |
+| Atlas scan-to-scan, deskewed | 3.70 % | 1.92 deg/100 m | 25.5 m | 4.1 cm | 59 ms, 1 thread |
+| **Atlas scan-to-map** | **0.48 %** | **0.12 deg/100 m** | 1.49 m | **1.7 cm** | **43 ms, 1 thread** |
+| KISS-ICP 1.3.0, same scans | **0.41 %** | 0.19 deg/100 m | **0.48 m** | 2.5 cm | 71 ms, 1 thread; 19 ms, all cores |
+
+(KISS-ICP times include Python call overhead. Its multi-threaded runs differ
+by up to 1e-12 m between runs; scores identical.)
+
+What made the difference, by removing one piece at a time from Atlas's
+scan-to-map pipeline: without deskewing 1.07 % end drift, without the KITTI
+correction 2.05 %, with both 0.38 %. The forward bias went from +2.6 cm per
+frame (scan-to-scan) to -0.2 cm: matching against a dense map of many scans
+removes the sampling-pattern pull diagnosed above.
+
+Voxel size is not a fragile choice: 0.75 m 0.48 % (81 ms), 1.0 m 0.48 %
+(47 ms), 1.5 m 0.52 % (22 ms).
+
+### Profile and memory
+
+Streaming (read a scan, process it): 42.6 ms median, 71 ms 90th percentile,
+155 ms worst per scan; 16.5 ICP iterations per scan; local map up to 300,574
+points; peak resident memory 79 MB (KISS-ICP via Python: 148 MB). The
+`sample` profiler: 62.5 % of the time is nearest-neighbor lookups in the
+local map (the expected hot spot; threads would be the next step), and 11 %
+was reading files: `readKittiScan` read through `istreambuf_iterator`, one
+char at a time. One bulk read: 9.5 -> 1.1 ms per scan.
+
+### Point-to-plane: not built in this phase
+
+It was planned to fix the sampling bias; the local map fixed it, and Atlas
+now matches a published point-to-point baseline. It stays an optional
+experiment.
+
+### Results, sequence 07: held out (1101 frames, 694 m, raw scans)
+
+Sequence 07 is urban: four sharp turns, about 747 deg of turning in total,
+a 77-frame stop, and a route that ends 9.5 m from its start. It was
+downloaded only after every parameter above was fixed, and nothing was
+changed for it: same commands, same defaults, for Atlas and for KISS-ICP.
+
+| Method | KITTI t_err | KITTI r_err | End error | Per-frame error (median) | Time per scan | Peak memory |
+| --- | --- | --- | --- | --- | --- | --- |
+| Atlas scan-to-scan, raw | 6.32 % | 3.71 deg/100 m | 34.4 m | 3.8 cm | 22 ms, 1 thread | |
+| Atlas scan-to-scan, deskewed | 5.46 % | 3.18 deg/100 m | 28.5 m | 3.8 cm | 32 ms, 1 thread | |
+| **Atlas scan-to-map** | **0.43 %** | **0.25 deg/100 m** | 0.80 m | **1.9 cm** | 28 ms median, 52 ms 90th, 216 ms worst; 1 thread | 106 MB |
+| KISS-ICP 1.3.0, same scans | 0.75 % | 0.37 deg/100 m | **0.72 m** | 2.5 cm | 47 ms, 1 thread; 15 ms, all cores | 195 MB |
+
+317 KITTI segments. Times: Apple M4; Atlas from a streaming run (read a
+scan, process it, discard it), which also gives the memory; the `odometry`
+command keeps all scans for three methods and peaks at 1.2 GB, which is
+not the method's cost. KISS-ICP times include Python call overhead; its
+1-thread and all-core poses were identical. The same streaming run on
+sequence 04 reproduced 43 ms and 78 MB.
+
+Reading it:
+
+- **The held-out result holds up.** Atlas did not get worse on a sequence it
+  was never looked at on (0.48 % on 04, 0.43 % on 07). Scan-to-scan got
+  worse (3.9 -> 6.3 %): more turning exposes its rotation drift.
+- **Atlas vs KISS-ICP: one win each.** KISS-ICP was ahead on 04 (0.41 vs
+  0.48 %), Atlas on 07 (0.43 vs 0.75 %). Per frame, Atlas's step error is
+  lower in every 100-frame block of 07, with KISS-ICP's worst near frames
+  200-300 (up to 20 cm steps at 7.5 m/s). Atlas follows KISS-ICP's
+  design but not its code, so they differ in small details; I have not
+  found which one causes the gap, so this is a measurement, not an
+  explanation. Two sequences cannot rank the methods.
+- **End error misleads on a loop.** The route returns near its start, so
+  errors made on the way out partly cancel on the way back: scan-to-map's
+  0.80 m end error is 0.12 % of the path, while the segment metric, which
+  measures every 100-800 m stretch, says 0.43 %. The segment metric is the
+  number to quote.
+- Paths: `results/path_07.svg` and `results/path_04.svg`, from
+  `atlas_kitti plot` (truth in gray; Atlas scan-to-map and KISS-ICP lie on
+  it at this scale; scan-to-scan visibly bends away at every turn).
+
+### Reproduce
+
+```bash
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build --parallel
+K=~/Desktop/Datasets/kitti; O=$K/odometry/dataset
+V07=$K/raw/2011_09_30/2011_09_30_drive_0027_sync/velodyne_points/data
+./build/atlas_kitti odometry $O 07 $V07          # three Atlas methods, saves results/atlas_07_*.txt
+<venv>/bin/python -I tools/kiss_icp_baseline.py $V07 0 1100 results/kiss_07.txt 1
+./build/atlas_kitti score $O 07 results/kiss_07.txt "KISS-ICP 1.3.0"
+./build/atlas_kitti plot $O 07 results/path_07.svg \
+    results/atlas_07_map.txt "Atlas scan-to-map" results/kiss_07.txt "KISS-ICP 1.3.0"
+```
+
+Sequence 04: the same with `04`, drive `2011_09_30_drive_0016`, frames 0-270.
+
+### What this does and does not show
+
+- Two sequences (394 m country road, 694 m urban loop), 1.1 km in all. The
+  design and defaults come from KISS-ICP, whose authors developed it on
+  KITTI; the parameters were looked at on 04 only, and 07 was held out.
+- Odometry only: no loop closure, so error still grows with distance.
+- Not comparable to the official leaderboard (raw scans, training sequence).
+- Synthetic test: with no velocity yet, frame 1 starts from a zero guess and
+  in a sparse synthetic street sometimes stays near zero (4 of 8 seeds lose
+  the first 1.2 m). On sequence 04 frame 1 was fine.
+
 ## Verification and limits
 
 Unit tests use hand-made files (CI has no KITTI data): two records copied
@@ -325,6 +495,19 @@ point forward 0.35 m with the point ahead unchanged, and rotation-vector round
 trips; breaks caught: flipped direction, deskewing from the sweep start
 instead of the middle, and a rotation log missing its angle/sin factor.
 
-Not yet: point-to-plane, a local map, robust weights, a weak-direction check,
-the official KITTI drift metric, a second sequence. Reading a scan loads the whole file into memory (about 2 MB),
+New tests: the rounding feedback loop itself (grows without
+`orthonormalized()`, stays at 1e-12 with it), the KITTI correction (0.205 deg,
+range kept), the metric (perfect estimate 0 %, a 1 % overshoot 1 %, segment
+count as the devkit's "strictly longer"), camera/Velodyne round trip, the
+local map (cap, removal), and scan-to-map odometry on a synthetic street
+(from frame 1: within 35 cm over 46 m; bounds above the 8-seed spread).
+Deliberate breaks caught: no re-orthonormalization, `>=` instead of the
+devkit's `>`, no robust weights.
+
+Plot tests: forward is straight up, left is left, equal scale on both axes,
+names escaped, empty or NaN input rejected; mirroring the plot fails two of
+them.
+
+Not yet: more sequences (highway, longer drives), loop closure, multi-threading, point-to-plane,
+a weak-direction check in 3D. Reading a scan loads the whole file into memory (about 2 MB),
 which is fine at this size.
