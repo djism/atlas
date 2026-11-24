@@ -113,6 +113,9 @@ test("phone width: no sideways scrolling", async ({ page }) => {
   await page.goto("./?lab=lost#lab");
   await expect(panelChip(page)).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await page.goto("./replay/?seq=07&frame=476");
+  await expect(page.getByTestId("frame-stamp")).toBeVisible({ timeout: 30_000 });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), "replay page").toBe(true);
 });
 
 test("real data: recorded KITTI results switch between drives", async ({ page }) => {
@@ -129,4 +132,30 @@ test("real data: recorded KITTI results switch between drives", async ({ page })
   await kiss.click();
   await expect(kiss).toHaveAttribute("aria-pressed", "false");
   await expect(section.locator(".rd-svg polyline.rd-kiss")).toHaveCSS("opacity", "0");
+  // A bar pair opens that stretch of the drive in the replay explorer.
+  await section.locator("a.rd-pair").nth(3).click();
+  await expect(page).toHaveURL(/replay\/\?seq=04&frame=90/);
+  await expect(page.getByTestId("frame-stamp")).toContainText("Frame 90 / 270", { timeout: 30_000 });
+});
+
+test("replay explorer: a recorded drive loads, scrubs, jumps, plays and switches drives", async ({ page }) => {
+  await page.goto("./replay/?seq=07&frame=476");
+  await expect(page.getByTestId("replay-label")).toContainText("REPLAY");
+  await expect(page.getByTestId("frame-stamp")).toContainText("Frame 476 / 1100", { timeout: 30_000 });
+  await expect(page.getByTestId("frame-title")).toHaveText("Left turn, 4.3 m/s");
+  await expect(page.getByTestId("atlas-step")).toHaveText("6.8 cm"); // matches the recorded run
+  await expect(page.locator(".rp-canvas canvas")).toBeVisible();
+  await page.getByRole("button", { name: "Next scan" }).click();
+  await expect(page.getByTestId("frame-stamp")).toContainText("Frame 477 /");
+  await page.getByRole("button", { name: /749 · Most drift/ }).click();
+  await expect(page.getByTestId("frame-stamp")).toContainText("Frame 749 /");
+  await expect(page).toHaveURL(/seq=07&frame=749/);
+  for (const camera of ["Top", "Free orbit", "Chase"]) await page.getByRole("button", { name: camera, exact: true }).click();
+  await page.getByRole("button", { name: "Play" }).click();
+  await page.waitForTimeout(1500);
+  await page.getByRole("button", { name: "Pause" }).click();
+  const after = Number(/Frame (\d+)/.exec(await page.getByTestId("frame-stamp").innerText())![1]);
+  expect(after).toBeGreaterThan(749); // playback advanced
+  await page.getByRole("button", { name: "Sequence 04" }).click();
+  await expect(page.getByTestId("frame-stamp")).toContainText("Frame 0 / 270", { timeout: 30_000 });
 });

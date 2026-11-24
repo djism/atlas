@@ -11,7 +11,11 @@
 //   atlas_kitti plot    <odometry_dir> <seq> <out.svg> <estimate.txt> <name> [<estimate.txt> <name> ...]
 //   atlas_kitti run     <odometry_dir> <seq> <velodyne_dir> <out_poses.txt> [key=value ...]
 //       One scan-to-map run, streaming (read a scan, process it, discard it); prints one JSON line.
-//       Keys: voxel (m, 1.0), max_range (m, 100), deskew (0/1, 1), correct (0/1, 1), frames (all).
+//       Keys: voxel (m, 1.0), max_range (m, 100), deskew (0/1, 1), correct (0/1, 1), frames (all),
+//       diag (path: per-frame CSV of ICP diagnostics for the replay explorer; off by default).
+//   atlas_kitti export-replay <velodyne_dir> <estimate.txt> <out_dir> [scan_points=1000] [map_voxel=0.4] [map_range=50]
+//       Point data for the web replay explorer (see docs/replay.md): map.bin, Atlas's map built from
+//       its OWN estimated poses; scans.bin, a thinned copy of every scan in its sensor frame.
 // odometry_dir is .../odometry/dataset (poses/, sequences/); velodyne_dir holds 0000000000.bin ...
 #include "atlas/image.hpp"
 #include "atlas/kitti.hpp"
@@ -26,7 +30,9 @@
 #include <exception>
 #include <fstream>
 #include <iostream>
+#include <cstdint>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 namespace {
@@ -374,6 +380,7 @@ int runCommand(int argc, char** argv) {
     MapOdometryOptions options;
     bool correct = true;
     std::size_t frames = s.velodyne.size();
+    std::string diag_path;
     for (int i = 6; i < argc; ++i) {
         const std::string arg = argv[i];
         const auto eq = arg.find('=');
@@ -387,6 +394,7 @@ int runCommand(int argc, char** argv) {
         else if (key == "max_range") options.max_range = std::stod(value);
         else if (key == "deskew") options.deskew = flag();
         else if (key == "correct") correct = flag();
+        else if (key == "diag") diag_path = value;
         else if (key == "frames") frames = std::min(frames, static_cast<std::size_t>(std::stoul(value)));
         else throw std::runtime_error("unknown key " + key);
     }
@@ -394,6 +402,7 @@ int runCommand(int argc, char** argv) {
         throw std::runtime_error("voxel and max_range must be positive; need at least 2 frames");
     MapOdometry3D odometry(options);
     std::vector<Pose3D> estimate;
+    std::vector<MapOdometryStep> steps;
     std::vector<double> ms;
     std::size_t not_converged = 0, map_points = 0;
     for (std::size_t i = 0; i < frames; ++i) {
@@ -403,10 +412,21 @@ int runCommand(int argc, char** argv) {
         const MapOdometryStep st = odometry.update(points);
         ms.push_back(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
         estimate.push_back(st.pose);
+        steps.push_back(st);
         if (i > 0) not_converged += st.status != Icp3DStatus::Converged;
         map_points = std::max(map_points, st.map_points);
     }
     writeKittiPoses(argv[5], estimate);
+    if (!diag_path.empty()) {
+        // One row per frame: what the engine itself saw (no ground truth here).
+        std::FILE* f = std::fopen(diag_path.c_str(), "w");
+        if (!f) throw std::runtime_error("cannot write " + diag_path);
+        std::fprintf(f, "frame,ms,status,iterations,pairs,source_points,map_points,sigma_m\n");
+        for (std::size_t i = 0; i < steps.size(); ++i)
+            std::fprintf(f, "%zu,%.2f,%s,%zu,%zu,%zu,%zu,%.4f\n", i, ms[i], icp3DStatusName(steps[i].status), steps[i].iterations,
+                         steps[i].pairs, steps[i].source_points, steps[i].map_points, steps[i].sigma);
+        if (std::fclose(f) != 0) throw std::runtime_error("cannot write " + diag_path);
+    }
     const Score sc = scoreTrajectory(s, tr, estimate);
     std::printf("{\"sequence\":\"%s\",\"frames\":%zu,\"t_err_percent\":%.4f,\"r_err_deg_per_100m\":%.4f,"
                 "\"segments\":%zu,\"end_error_m\":%.3f,\"path_length_m\":%.1f,\"step_error_median_m\":%.4f,"
@@ -414,6 +434,76 @@ int runCommand(int argc, char** argv) {
                 argv[3], frames, sc.metric.translation_percent, sc.metric.rotation_deg_per_100m, sc.metric.segments,
                 sc.comparison.end_error, sc.comparison.length, percentile(sc.comparison.step_translation_error, 0.5),
                 percentile(ms, 0.5), percentile(ms, 0.9), percentile(ms, 1.0), not_converged, map_points);
+    return EXIT_SUCCESS;
+}
+
+void putInt16(std::vector<unsigned char>& out, double value) {
+    const long v = std::lround(value);
+    if (v < INT16_MIN || v > INT16_MAX) throw std::runtime_error("value out of int16 range in export");
+    const auto u = static_cast<std::uint16_t>(static_cast<std::int16_t>(v));
+    out.push_back(static_cast<unsigned char>(u & 0xff));  // little-endian, whatever the machine
+    out.push_back(static_cast<unsigned char>(u >> 8));
+}
+
+void writeBytes(const std::string& path, const std::vector<unsigned char>& bytes) {
+    std::ofstream f(path, std::ios::binary);
+    f.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+    if (!f) throw std::runtime_error("cannot write " + path);
+}
+
+// Exports what the replay explorer draws. Formats (all little-endian int16 x, y, z triples):
+//   map.bin   decimeters, in the first scan's sensor frame: one point per map_voxel cube, from
+//             every scan (KITTI-corrected, within map_range) placed with ATLAS'S ESTIMATED pose,
+//             so drift shows up in the map exactly as the estimator built it.
+//   scans.bin centimeters, each scan in its own sensor frame (KITTI-corrected), thinned to exactly
+//             scan_points points (every k-th point within map_range; short scans repeat the last
+//             point). Frame i starts at byte i * scan_points * 6.
+int exportReplayCommand(int argc, char** argv) {
+    const std::string dir = argv[2];
+    const std::vector<Pose3D> estimate = readKittiPoses(argv[3]);
+    const std::string out = argv[4];
+    std::size_t scan_points = 1000;
+    double voxel = 0.4, range = 50;
+    for (int i = 5; i < argc; ++i) {
+        const std::string arg = argv[i];
+        const auto eq = arg.find('=');
+        const std::string key = arg.substr(0, eq), value = eq == std::string::npos ? "" : arg.substr(eq + 1);
+        if (key == "scan_points") scan_points = std::stoul(value);
+        else if (key == "map_voxel") voxel = std::stod(value);
+        else if (key == "map_range") range = std::stod(value);
+        else throw std::runtime_error("unknown key " + arg);
+    }
+    if (scan_points == 0 || !(voxel > 0) || !(range > 0)) throw std::runtime_error("bad export parameters");
+    std::unordered_set<std::uint64_t> filled;
+    std::vector<unsigned char> map_bytes, scan_bytes;
+    const auto cell = [&](double v) { return static_cast<std::uint64_t>(static_cast<std::int64_t>(std::floor(v / voxel)) + (1 << 20)) & 0x1fffff; };
+    for (std::size_t i = 0; i < estimate.size(); ++i) {
+        const std::vector<Point3D> points = correctKittiScan(readKittiScan(kittiScanPath(dir, i)).points);
+        std::vector<Point3D> near;
+        near.reserve(points.size());
+        for (const Point3D& p : points)
+            if (std::sqrt(p.x * p.x + p.y * p.y + p.z * p.z) <= range) near.push_back(p);
+        if (near.empty()) throw std::runtime_error("scan " + std::to_string(i) + " has no points in range");
+        for (const Point3D& p : near) {
+            const Point3D w = transformPoint3D(p, estimate[i]);
+            if (filled.insert((cell(w.x) << 42) | (cell(w.y) << 21) | cell(w.z)).second) {
+                putInt16(map_bytes, w.x * 10);
+                putInt16(map_bytes, w.y * 10);
+                putInt16(map_bytes, w.z * 10);
+            }
+        }
+        const std::size_t step = std::max<std::size_t>(1, near.size() / scan_points);
+        for (std::size_t k = 0; k < scan_points; ++k) {
+            const Point3D& p = near[std::min(k * step, near.size() - 1)];
+            putInt16(scan_bytes, p.x * 100);
+            putInt16(scan_bytes, p.y * 100);
+            putInt16(scan_bytes, p.z * 100);
+        }
+    }
+    writeBytes(out + "/map.bin", map_bytes);
+    writeBytes(out + "/scans.bin", scan_bytes);
+    std::printf("{\"frames\":%zu,\"scan_points\":%zu,\"map_points\":%zu,\"map_voxel\":%g,\"map_range\":%g}\n",
+                estimate.size(), scan_points, map_bytes.size() / 6, voxel, range);
     return EXIT_SUCCESS;
 }
 
@@ -456,6 +546,7 @@ int main(int argc, char** argv) {
         if (cmd == "score" && (argc == 5 || argc == 6)) return scoreCommand(argc, argv);
         if (cmd == "plot" && argc >= 7 && argc % 2 == 1) return plotCommand(argc, argv);
         if (cmd == "run" && argc >= 6) return runCommand(argc, argv);
+        if (cmd == "export-replay" && argc >= 5) return exportReplayCommand(argc, argv);
     } catch (const std::exception& e) {
         std::cerr << "error: " << e.what() << '\n';
         return EXIT_FAILURE;
@@ -468,6 +559,7 @@ int main(int argc, char** argv) {
                  "  atlas_kitti icp-from-truth <odometry_dir> <seq> <velodyne_dir>\n"
                  "  atlas_kitti score <odometry_dir> <seq> <estimate_velodyne.txt> [name]\n"
                  "  atlas_kitti plot <odometry_dir> <seq> <out.svg> <estimate.txt> <name> [<estimate.txt> <name> ...]\n"
-                 "  atlas_kitti run <odometry_dir> <seq> <velodyne_dir> <out_poses.txt> [voxel=1 max_range=100 deskew=1 correct=1 frames=N]\n";
+                 "  atlas_kitti run <odometry_dir> <seq> <velodyne_dir> <out_poses.txt> [voxel=1 max_range=100 deskew=1 correct=1 frames=N diag=file]\n"
+                 "  atlas_kitti export-replay <velodyne_dir> <estimate.txt> <out_dir> [scan_points=1000 map_voxel=0.4 map_range=50]\n";
     return EXIT_FAILURE;
 }

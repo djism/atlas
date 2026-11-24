@@ -1,6 +1,9 @@
 import { useMemo, useState } from "react";
 import { KITTI_RECORDINGS } from "../data/kittiPaths";
 import { fitPaths, pairedBars, type PathName } from "../lib/kittiPlot";
+import { replayQuery } from "../lib/replay";
+
+const replayHref = `${import.meta.env.BASE_URL}replay/`;
 
 // Recorded results, not computed in the browser. Numbers come from
 // `atlas_kitti score` and the streaming runs in docs/kitti.md (Apple M4).
@@ -80,7 +83,10 @@ export function RealData() {
             </button>
           ))}
         </div>
-        <span className="pill mono rd-label">Recorded offline on an Apple M4 · not running live in this page</span>
+        <div className="rd-bar-right">
+          <span className="pill mono rd-label">Recorded offline on an Apple M4 · not running live in this page</span>
+          <a className="btn-primary rd-replay" href={`${replayHref}${replayQuery(seq, 0)}`}>Open the replay explorer</a>
+        </div>
       </div>
 
       <div className="rd-grid">
@@ -151,19 +157,25 @@ export function RealData() {
               <p>Error per step along the drive</p>
               <span>{rec.scansPerStretch} scans per pair</span>
             </div>
-            <div className="rd-bars" role="img"
-              aria-label={`Average step error per stretch of sequence ${seq}: Atlas ${rec.stretchErrorCm.atlas.map((v) => v.toFixed(1)).join(", ")} cm; KISS-ICP ${rec.stretchErrorCm.kiss.map((v) => v.toFixed(1)).join(", ")} cm`}>
-              {bars.map((b, i) => (
-                <div key={i} className="rd-pair">
-                  <div className="rd-a" style={{ height: `${Math.max(2, b.a)}%` }} title={`Atlas ${rec.stretchErrorCm.atlas[i].toFixed(1)} cm`} />
-                  <div className="rd-k" style={{ height: `${Math.max(2, b.b)}%` }} title={`KISS-ICP ${rec.stretchErrorCm.kiss[i].toFixed(1)} cm`} />
-                </div>
-              ))}
+            <div className="rd-bars" role="group" aria-label={`Average step error per stretch of sequence ${seq}; each pair opens that stretch in the replay explorer`}>
+              {bars.map((b, i) => {
+                const first = i * rec.scansPerStretch;
+                const last = Math.min(rec.scans - 1, first + rec.scansPerStretch);
+                const a = rec.stretchErrorCm.atlas[i].toFixed(1), k = rec.stretchErrorCm.kiss[i].toFixed(1);
+                return (
+                  <a key={i} className="rd-pair" href={`${replayHref}${replayQuery(seq, first)}`}
+                    aria-label={`Scans ${first} to ${last}: Atlas ${a} cm, KISS-ICP ${k} cm. Open in the replay explorer.`}
+                    title={`Scans ${first}–${last}: Atlas ${a} cm, KISS-ICP ${k} cm. Click to replay.`}>
+                    <div className="rd-a" style={{ height: `${Math.max(2, b.a)}%` }} />
+                    <div className="rd-k" style={{ height: `${Math.max(2, b.b)}%` }} />
+                  </a>
+                );
+              })}
             </div>
             <div className="rd-axis"><span>scan 0</span><span>scan {(rec.scans - 1).toLocaleString("en-US")}</span></div>
             <p className="rd-note">
               Blue: Atlas. Gray: KISS-ICP. Each pair is the average distance between the estimated and the true step, in
-              centimeters, over one stretch of the drive.
+              centimeters, over one stretch of the drive. Click a pair to replay that stretch.
             </p>
           </div>
         </div>

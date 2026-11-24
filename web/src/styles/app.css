@@ -173,6 +173,11 @@ a { color: inherit; }
 .rd-errhead span, .rd-axis { font: 500 11px/1 var(--font-mono); color: var(--dim); }
 .rd-bars { display: flex; align-items: flex-end; gap: 6px; height: 96px; padding-bottom: 6px; border-bottom: 1px solid var(--ink); }
 .rd-pair { flex: 1 1 0; display: flex; align-items: flex-end; justify-content: center; gap: 2px; height: 100%; }
+a.rd-pair { text-decoration: none; cursor: pointer; border-radius: 4px; }
+a.rd-pair:hover { background: var(--mist); }
+a.rd-pair:focus-visible { outline: 2px solid var(--signal); outline-offset: 2px; }
+.rd-bar-right { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-3); }
+.rd-replay { padding: 14px 20px; font-size: 15px; }
 .rd-a, .rd-k { width: 42%; max-width: 18px; border-radius: 3px 3px 0 0; }
 .rd-a { background: var(--signal); }
 .rd-k { background: var(--baseline); }
