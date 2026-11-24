@@ -114,3 +114,19 @@ test("phone width: no sideways scrolling", async ({ page }) => {
   await expect(panelChip(page)).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 });
+
+test("real data: recorded KITTI results switch between drives", async ({ page }) => {
+  await page.goto("./#results");
+  const section = page.locator("#results");
+  await expect(section.getByText("not running live in this page")).toBeVisible();
+  await expect(page.getByTestId("rd-verdict")).toHaveText("Atlas ahead on this drive");
+  await expect(section.locator(".rd-svg polyline")).toHaveCount(4);
+  await expect(section.locator(".rd-pair")).toHaveCount(11); // 1,100 steps in stretches of 100
+  await section.getByRole("button", { name: /Sequence 04/ }).click();
+  await expect(page.getByTestId("rd-verdict")).toHaveText("KISS-ICP ahead on this drive");
+  await expect(section.locator(".rd-pair")).toHaveCount(9);
+  const kiss = section.getByRole("button", { name: "KISS-ICP", exact: true });
+  await kiss.click();
+  await expect(kiss).toHaveAttribute("aria-pressed", "false");
+  await expect(section.locator(".rd-svg polyline.rd-kiss")).toHaveCSS("opacity", "0");
+});
