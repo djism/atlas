@@ -7,6 +7,8 @@
 //   atlas_kitti odometry <odometry_dir> <seq> <velodyne_dir> [source_voxel_m] [frames]
 //   atlas_kitti deskew-check <odometry_dir> <seq> <velodyne_dir>
 //   atlas_kitti icp-from-truth <odometry_dir> <seq> <velodyne_dir>
+//   atlas_kitti score   <odometry_dir> <seq> <estimate.txt> [name]   (estimate: Velodyne frame, frame 0 = identity)
+//   atlas_kitti plot    <odometry_dir> <seq> <out.svg> <estimate.txt> <name> [<estimate.txt> <name> ...]
 // odometry_dir is .../odometry/dataset (poses/, sequences/); velodyne_dir holds 0000000000.bin ...
 #include "atlas/image.hpp"
 #include "atlas/kitti.hpp"
@@ -19,6 +21,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <exception>
+#include <fstream>
 #include <iostream>
 #include <string>
 #include <vector>
@@ -178,57 +181,7 @@ int mapCommand(int argc, char** argv) {
                 argv[5], used, every, cloud.size(), resolution * 100, 2 * half);
     return EXIT_SUCCESS;
 }
-int odometryCommand(int argc, char** argv) {
-    const Sequence s = loadSequence(argv[2], argv[3]);
-    const std::string dir = argv[4];
-    const double source_voxel = argc >= 6 ? std::stod(argv[5]) : 1.0;
-    const std::size_t frames = std::min(s.velodyne.size(), argc >= 7 ? std::stoul(argv[6]) : s.velodyne.size());
-    std::vector<KittiScan> scans;
-    for (std::size_t i = 0; i < frames; ++i) scans.push_back(readKittiScan(kittiScanPath(dir, i)));
-    const std::vector<Pose3D> truth(s.velodyne.begin(), s.velodyne.begin() + static_cast<std::ptrdiff_t>(frames));
-    std::printf("Sequence %s, frames 0-%zu, raw scans; scored against the ground truth. Source thinned to one point\n"
-                "per %.2f m cube; previous scan to 0.25 m; pairs within 1 m. One thread; ms excludes file reading.\n\n",
-                argv[3], frames - 1, source_voxel);
-    std::printf("%-30s | %-24s | %-13s | %-19s | %-13s | %s\n", "method", "per-frame error med/90%", "forward bias",
-                "end error / drift", "heading drift", "ms/scan");
-    // Rows: raw scans; deskewed with the estimator's own prediction; and an ORACLE
-    // row deskewed beforehand with the true motion (uses the answer key: an upper
-    // bound for what deskewing can give, not a result).
-    for (int mode = 0; mode < 3; ++mode) {
-        ScanOdometryOptions o;
-        o.source_voxel = source_voxel;
-        o.deskew = mode == 1;
-        ScanOdometry3D odometry(o);
-        std::vector<Pose3D> estimate;
-        std::vector<double> ms;
-        std::size_t not_converged = 0;
-        for (std::size_t i = 0; i < scans.size(); ++i) {
-            std::vector<Point3D> points = scans[i].points;
-            if (mode == 2 && i + 1 < truth.size())  // oracle: true motion over this sweep
-                points = deskewScan(points, relativePose3D(truth[i], truth[i + 1]), SweepDirection::Clockwise);
-            const auto t0 = std::chrono::steady_clock::now();
-            const ScanOdometryStep step = odometry.update(points);
-            ms.push_back(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
-            estimate.push_back(step.pose);
-            if (i > 0) not_converged += step.status != Icp3DStatus::Converged;
-        }
-        const TrajectoryComparison c = compareTrajectories(estimate, truth);
-        const Pose3D last = relativePose3D(truth.back(), estimate.back());
-        char err[32], end[32];
-        std::snprintf(err, sizeof err, "%.3f / %.3f m", percentile(c.step_translation_error, 0.5),
-                      percentile(c.step_translation_error, 0.9));
-        std::snprintf(end, sizeof end, "%.2f m / %.2f%%", c.end_error, 100 * c.end_error / c.length);
-        const char* names[] = {"raw scans", "deskewed (own prediction)", "ORACLE: deskewed with truth"};
-        std::printf("%-30s | %-24s | %+7.4f m/frm | %-19s | %+8.2f deg  | %.1f\n", names[mode], err,
-                    percentile(c.step_forward_error, 0.5), end,
-                    std::atan2(last.r[3], last.r[0]) * 180 / std::acos(-1.0), percentile(ms, 0.5));
-        if (not_converged) std::printf("  (%zu of %zu frames not 'converged')\n", not_converged, frames - 1);
-    }
-    std::printf("\nForward bias: median of (estimated - true) motion along the true direction, per frame.\n"
-                "Heading drift: yaw of the final estimated orientation relative to the true one.\n");
-    return EXIT_SUCCESS;
-}
-
+int odometryCommand(int argc, char** argv);
 // Which deskew model makes scans agree under the ground truth? Pairs of scans
 // (k, k+gap) are deskewed with the TRUE per-sweep motion (an oracle: this tests
 // the timing model, not an estimator), placed with the true relative pose, and
@@ -308,6 +261,132 @@ int icpFromTruthCommand(char** argv) {
     }
     return EXIT_SUCCESS;
 }
+struct Score {
+    KittiMetric metric;
+    TrajectoryComparison comparison;
+    double heading_deg = 0;
+};
+
+// Scores Velodyne-frame poses against the ground truth: the KITTI metric in the
+// camera frame (as the devkit does), plus end error and final heading error.
+Score scoreTrajectory(const Sequence& s, const Pose3D& tr, const std::vector<Pose3D>& estimate_velodyne) {
+    Score out;
+    const std::vector<Pose3D> truth(s.velodyne.begin(), s.velodyne.begin() + static_cast<std::ptrdiff_t>(estimate_velodyne.size()));
+    const std::vector<Pose3D> truth_camera(s.camera.begin(), s.camera.begin() + static_cast<std::ptrdiff_t>(estimate_velodyne.size()));
+    out.metric = kittiMetric(cameraPoses(estimate_velodyne, tr), truth_camera);
+    out.comparison = compareTrajectories(estimate_velodyne, truth);
+    const Pose3D last = relativePose3D(truth.back(), estimate_velodyne.back());
+    out.heading_deg = std::atan2(last.r[3], last.r[0]) * 180 / std::acos(-1.0);
+    return out;
+}
+
+void printScoreHeader() {
+    std::printf("%-34s | %-14s | %-12s | %-17s | %-9s | %s\n", "method", "KITTI t_err", "r_err", "end error (drift)",
+                "heading", "per-frame error med");
+}
+void printScore(const char* name, const Score& sc) {
+    char end[32];
+    std::snprintf(end, sizeof end, "%.2f m (%.2f%%)", sc.comparison.end_error, 100 * sc.comparison.end_error / sc.comparison.length);
+    std::printf("%-34s | %6.2f %%       | %5.2f d/100m | %-17s | %+6.2f d  | %.3f m\n", name, sc.metric.translation_percent,
+                sc.metric.rotation_deg_per_100m, end, sc.heading_deg, percentile(sc.comparison.step_translation_error, 0.5));
+}
+
+// Runs Atlas's odometry variants on one sequence, scores each against the
+// ground truth (KITTI metric in the camera frame), and saves the poses
+// (Velodyne frame) to results/atlas_<seq>_<variant>.txt for `score` and plots.
+int odometryCommand(int argc, char** argv) {
+    const Sequence s = loadSequence(argv[2], argv[3]);
+    const Pose3D tr = readKittiVelodyneInCamera(std::string(argv[2]) + "/sequences/" + argv[3] + "/calib.txt");
+    const std::string dir = argv[4];
+    const double source_voxel = argc >= 6 ? std::stod(argv[5]) : 1.0;
+    const std::size_t frames = std::min(s.velodyne.size(), argc >= 7 ? std::stoul(argv[6]) : s.velodyne.size());
+    std::vector<std::vector<Point3D>> raw, corrected;
+    for (std::size_t i = 0; i < frames; ++i) {
+        raw.push_back(readKittiScan(kittiScanPath(dir, i)).points);
+        corrected.push_back(correctKittiScan(raw.back()));
+    }
+    std::printf("Sequence %s, frames 0-%zu, raw scans. One thread, Apple M4; ms excludes file reading.\n\n", argv[3], frames - 1);
+    printScoreHeader();
+    struct Variant { const char* name; const char* file; int kind; };
+    const Variant variants[] = {
+        {"scan-to-scan, raw", "scan_raw", 0},
+        {"scan-to-scan, deskewed", "scan_deskew", 1},
+        {"scan-to-map (KISS design), corr.", "map", 2},
+    };
+    for (const Variant& v : variants) {
+        std::vector<Pose3D> estimate;
+        std::vector<double> ms;
+        std::size_t not_converged = 0, source_points = 0, map_points = 0;
+        ScanOdometryOptions so;
+        so.source_voxel = source_voxel;
+        so.deskew = v.kind == 1;
+        ScanOdometry3D scan_odometry(so);
+        MapOdometry3D map_odometry;
+        for (std::size_t i = 0; i < frames; ++i) {
+            const auto t0 = std::chrono::steady_clock::now();
+            if (v.kind < 2) {
+                const ScanOdometryStep st = scan_odometry.update(raw[i]);
+                estimate.push_back(st.pose);
+                if (i > 0) not_converged += st.status != Icp3DStatus::Converged;
+                source_points += st.source_points;
+            } else {
+                const MapOdometryStep st = map_odometry.update(corrected[i]);
+                estimate.push_back(st.pose);
+                if (i > 0) not_converged += st.status != Icp3DStatus::Converged;
+                source_points += st.source_points;
+                map_points = st.map_points;
+            }
+            ms.push_back(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
+        }
+        const Score sc = scoreTrajectory(s, tr, estimate);
+        char name[64];
+        std::snprintf(name, sizeof name, "%s, %.0f ms", v.name, percentile(ms, 0.5));
+        printScore(name, sc);
+        std::printf("    %zu of %zu frames not 'converged'; %.0f source points per scan%s\n", not_converged, frames - 1,
+                    static_cast<double>(source_points) / frames,
+                    map_points ? (", map " + std::to_string(map_points) + " points at the end").c_str() : "");
+        writeKittiPoses("results/atlas_" + std::string(argv[3]) + "_" + v.file + ".txt", estimate);
+    }
+    std::printf("\nKITTI t_err / r_err: the devkit metric (segments of 100-800 m, every 10th frame), camera frame.\n"
+                "Poses saved to results/atlas_%s_<variant>.txt (Velodyne frame).\n", argv[3]);
+    return EXIT_SUCCESS;
+}
+
+int scoreCommand(int argc, char** argv) {
+    const Sequence s = loadSequence(argv[2], argv[3]);
+    const Pose3D tr = readKittiVelodyneInCamera(std::string(argv[2]) + "/sequences/" + argv[3] + "/calib.txt");
+    const std::vector<Pose3D> estimate = readKittiPoses(argv[4]);
+    if (estimate.size() > s.velodyne.size()) throw std::runtime_error("estimate has more poses than the ground truth");
+    const Score sc = scoreTrajectory(s, tr, estimate);
+    std::printf("Scored %zu frames (%zu KITTI segments of 100-800 m)\n", estimate.size(), sc.metric.segments);
+    printScoreHeader();
+    printScore(argc == 6 ? argv[5] : argv[4], sc);
+    return EXIT_SUCCESS;
+}
+// Top-down SVG: the ground truth (gray) under each estimate, all in the
+// first scan's Velodyne frame (the frame odometry estimates live in).
+int plotCommand(int argc, char** argv) {
+    const Sequence s = loadSequence(argv[2], argv[3]);
+    const auto positions = [](const std::vector<Pose3D>& poses) {
+        std::vector<Point2D> out;
+        out.reserve(poses.size());
+        for (const Pose3D& p : poses) out.push_back({p.t.x, p.t.y});
+        return out;
+    };
+    const char* colors[] = {"#1f5fbf", "#d9480f", "#2b8a3e", "#862e9c"};
+    std::vector<PlotSeries> series{{"ground truth (KITTI poses, converted to Velodyne)", "#a8a8a8", positions(s.velodyne)}};
+    for (int i = 5; i + 1 < argc; i += 2) {
+        const std::vector<Pose3D> estimate = readKittiPoses(argv[i]);
+        if (estimate.size() > s.velodyne.size()) throw std::runtime_error("estimate has more poses than the ground truth");
+        series.push_back({argv[i + 1], colors[(i - 5) / 2 % 4], positions(estimate)});
+    }
+    const std::string title = "KITTI sequence " + std::string(argv[3]) + ": estimated vs true path, seen from above";
+    std::ofstream file(argv[4]);
+    file << trajectorySvg(series, title);
+    if (!file) throw std::runtime_error(std::string("cannot write ") + argv[4]);
+    std::printf("Wrote %s (%zu paths)\n", argv[4], series.size());
+    return EXIT_SUCCESS;
+}
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -320,6 +399,8 @@ int main(int argc, char** argv) {
         if (cmd == "odometry" && argc >= 5 && argc <= 7) return odometryCommand(argc, argv);
         if (cmd == "deskew-check" && argc == 5) return deskewCheckCommand(argv);
         if (cmd == "icp-from-truth" && argc == 5) return icpFromTruthCommand(argv);
+        if (cmd == "score" && (argc == 5 || argc == 6)) return scoreCommand(argc, argv);
+        if (cmd == "plot" && argc >= 7 && argc % 2 == 1) return plotCommand(argc, argv);
     } catch (const std::exception& e) {
         std::cerr << "error: " << e.what() << '\n';
         return EXIT_FAILURE;
@@ -329,6 +410,8 @@ int main(int argc, char** argv) {
                  "  atlas_kitti map <odometry_dir> <seq> <velodyne_dir> <out.bmp> [every_nth_scan]\n"
                  "  atlas_kitti odometry <odometry_dir> <seq> <velodyne_dir> [source_voxel_m] [frames]\n"
                  "  atlas_kitti deskew-check <odometry_dir> <seq> <velodyne_dir>\n"
-                 "  atlas_kitti icp-from-truth <odometry_dir> <seq> <velodyne_dir>\n";
+                 "  atlas_kitti icp-from-truth <odometry_dir> <seq> <velodyne_dir>\n"
+                 "  atlas_kitti score <odometry_dir> <seq> <estimate_velodyne.txt> [name]\n"
+                 "  atlas_kitti plot <odometry_dir> <seq> <out.svg> <estimate.txt> <name> [<estimate.txt> <name> ...]\n";
     return EXIT_FAILURE;
 }

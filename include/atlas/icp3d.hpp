@@ -36,4 +36,18 @@ Icp3DResult alignIcp3D(const VoxelGrid3D& reference, const std::vector<Point3D>&
                        const Icp3DOptions& options = {});
 
 const char* icp3DStatusName(Icp3DStatus status);
+
+// Point-to-point ICP against a local map with robust (Geman-McClure) weights:
+// each pair with squared distance r2 counts w = kernel^2 / (kernel + r2)^2, so
+// far pairs (moving objects, wrong matches) pull less. Pairs farther than
+// max_correspondence_distance are ignored. Gauss-Newton as in alignIcp3D.
+struct MapIcpOptions {
+    double max_correspondence_distance = 1.0;  // meters
+    double kernel = 0.3;                       // Geman-McClure scale (KISS-ICP 1.3.0 convention)
+    std::size_t max_iterations = 500;
+    double tolerance = 1e-4;  // stop when the update (translation m + rotation rad) is smaller
+    std::size_t min_pairs = 50;
+};
+Icp3DResult alignToMap(const LocalMap3D& map, const std::vector<Point3D>& source, const Pose3D& guess,
+                       const MapIcpOptions& options);
 }  // namespace atlas

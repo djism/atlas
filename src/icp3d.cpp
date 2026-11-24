@@ -102,4 +102,57 @@ Icp3DResult alignIcp3D(const VoxelGrid3D& reference, const std::vector<Point3D>&
     result.status = Icp3DStatus::HitIterationLimit;
     return result;
 }
+Icp3DResult alignToMap(const LocalMap3D& map, const std::vector<Point3D>& source, const Pose3D& guess,
+                       const MapIcpOptions& options) {
+    Icp3DResult result;
+    result.source_in_reference = guess;
+    const double k2 = options.kernel * options.kernel;
+    for (std::size_t it = 0; it < options.max_iterations; ++it) {
+        result.iterations = it + 1;
+        double h[6][6] = {}, g[6] = {};
+        double sum_sq = 0;
+        std::size_t pairs = 0;
+        for (const Point3D& p : source) {
+            const Point3D x = transformPoint3D(p, result.source_in_reference);
+            Point3D q;
+            double d;
+            if (!map.nearest(x, options.max_correspondence_distance, q, d)) continue;
+            const double r[3] = {x.x - q.x, x.y - q.y, x.z - q.z};
+            const double r2 = d * d;
+            const double w = k2 / ((options.kernel + r2) * (options.kernel + r2));
+            const double j[3][6] = {{1, 0, 0, 0, x.z, -x.y}, {0, 1, 0, -x.z, 0, x.x}, {0, 0, 1, x.y, -x.x, 0}};
+            for (int row = 0; row < 3; ++row)
+                for (int a = 0; a < 6; ++a) {
+                    if (j[row][a] == 0) continue;
+                    g[a] += w * j[row][a] * r[row];
+                    for (int b = 0; b < 6; ++b) h[a][b] += w * j[row][a] * j[row][b];
+                }
+            sum_sq += r2;
+            ++pairs;
+        }
+        result.pairs = pairs;
+        if (pairs < options.min_pairs) {
+            result.status = Icp3DStatus::TooFewPairs;
+            return result;
+        }
+        result.rmse = std::sqrt(sum_sq / pairs);
+        double minus_g[6], delta[6];
+        for (int a = 0; a < 6; ++a) minus_g[a] = -g[a];
+        if (!solve6(h, minus_g, delta)) {
+            result.status = Icp3DStatus::Degenerate;
+            return result;
+        }
+        Pose3D step = rotationFromVector({delta[3], delta[4], delta[5]});
+        step.t = {delta[0], delta[1], delta[2]};
+        result.source_in_reference = composePoses3D(step, result.source_in_reference);
+        double norm = 0;
+        for (double v : delta) norm += v * v;
+        if (std::sqrt(norm) < options.tolerance) {
+            result.status = Icp3DStatus::Converged;
+            return result;
+        }
+    }
+    result.status = Icp3DStatus::HitIterationLimit;
+    return result;
+}
 }  // namespace atlas

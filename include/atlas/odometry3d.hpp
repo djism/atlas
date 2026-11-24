@@ -2,6 +2,7 @@
 #include "atlas/geometry3d.hpp"
 #include "atlas/icp3d.hpp"
 #include "atlas/kitti.hpp"
+#include "atlas/voxel.hpp"
 #include <cstddef>
 #include <vector>
 
@@ -49,6 +50,54 @@ private:
     bool started_ = false;
 };
 
+// Scan-to-MAP LiDAR odometry, following KISS-ICP's design (Vizzo et al.,
+// "KISS-ICP: In Defense of Point-to-Point ICP", RA-L 2023), implemented here:
+//   1. drop points outside [min_range, max_range]; deskew with the last motion;
+//   2. thin to one point per voxel/2 cube (kept for the map) and again per
+//      1.5*voxel cube (used to register);
+//   3. register against the local map from the constant-velocity guess, pairs
+//      within 3 sigma, robust kernel sigma, where sigma is learned from how far
+//      past estimates moved from their predictions (adaptive threshold);
+//   4. add the voxel/2 points to the map at the new pose; drop map cubes
+//      farther than max_range.
+struct MapOdometryOptions {
+    double voxel_size = 1.0;            // meters (KISS-ICP default: max_range / 100)
+    double max_range = 100.0;           // meters
+    double min_range = 0.0;
+    std::size_t max_points_per_voxel = 20;
+    double initial_threshold = 2.0;     // sigma before any motion was seen, meters
+    double min_motion = 0.1;            // frames moving less than this do not update sigma
+    bool deskew = true;
+    SweepDirection sweep_direction = SweepDirection::Clockwise;
+    std::size_t max_iterations = 500;
+};
+
+struct MapOdometryStep {
+    Pose3D pose;     // sensor at this scan, in the first scan's sensor frame
+    Icp3DStatus status = Icp3DStatus::Converged;
+    std::size_t iterations = 0;
+    std::size_t pairs = 0;
+    std::size_t source_points = 0;
+    std::size_t map_points = 0;
+    double sigma = 0;  // adaptive threshold used for this scan, meters
+};
+
+class MapOdometry3D {
+public:
+    explicit MapOdometry3D(MapOdometryOptions options = {});
+    MapOdometryStep update(const std::vector<Point3D>& scan);
+    const LocalMap3D& map() const { return map_; }
+
+private:
+    double threshold() const;
+    MapOdometryOptions options_;
+    LocalMap3D map_;
+    Pose3D pose_{};
+    Pose3D last_motion_{};
+    double model_sse_ = 0;
+    std::size_t samples_ = 0;
+};
+
 // Estimated vs answer-key trajectory (same frames, same first pose).
 struct TrajectoryComparison {
     std::vector<double> step_translation_error;  // |estimated motion - true motion|, meters, per frame
@@ -58,6 +107,18 @@ struct TrajectoryComparison {
     double end_error = 0;    // distance between final positions, meters
     double worst_error = 0;  // largest position error over the run, meters
 };
+
+// The KITTI odometry benchmark's metric, ported from the devkit's
+// evaluate_odometry.cpp: for every 10th frame and every segment length of
+// 100, 200, ..., 800 m (by ground-truth path length), the error of the
+// estimated relative pose over that segment, divided by the length. Both
+// trajectories must be in the devkit's frame (left camera; see cameraPoses).
+struct KittiMetric {
+    double translation_percent = 0;     // mean over segments, % of distance
+    double rotation_deg_per_100m = 0;   // mean over segments
+    std::size_t segments = 0;           // 0 if the drive is shorter than 100 m
+};
+KittiMetric kittiMetric(const std::vector<Pose3D>& estimate, const std::vector<Pose3D>& truth);
 
 // Throws std::invalid_argument for different lengths or fewer than 2 poses.
 TrajectoryComparison compareTrajectories(const std::vector<Pose3D>& estimate, const std::vector<Pose3D>& truth);

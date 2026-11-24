@@ -33,6 +33,12 @@ Point3D rotationVector(const Pose3D& pose);
 // is negligible). s may be negative (moving backwards in time).
 Pose3D scaleMotion(const Pose3D& motion, double s);
 
+// The nearest proper rotation by Gram-Schmidt on R's rows (translation kept).
+// Chained compose/inverse steps are exact only for perfect rotations; where a
+// motion is computed back from poses and fed forward again (odometry), rounding
+// errors grow every step unless the rotation is snapped back like this.
+Pose3D orthonormalized(const Pose3D& pose);
+
 // Angle of the rotation, radians in [0, pi]: acos((trace(R) - 1) / 2).
 double rotationAngle(const Pose3D& pose);
 // Largest |(R R^T - I)| entry and |det(R) - 1|: 0 for an exact rotation.

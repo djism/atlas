@@ -71,6 +71,24 @@ Pose3D scaleMotion(const Pose3D& motion, double s) {
     return out;
 }
 
+Pose3D orthonormalized(const Pose3D& pose) {
+    Pose3D out = pose;
+    auto& r = out.r;
+    const auto normalize = [](double* v) {
+        const double n = std::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+        v[0] /= n; v[1] /= n; v[2] /= n;
+    };
+    normalize(&r[0]);
+    const double d = r[3] * r[0] + r[4] * r[1] + r[5] * r[2];
+    r[3] -= d * r[0]; r[4] -= d * r[1]; r[5] -= d * r[2];
+    normalize(&r[3]);
+    // Third row = first x second: right-handed, orthogonal to both.
+    r[6] = r[1] * r[5] - r[2] * r[4];
+    r[7] = r[2] * r[3] - r[0] * r[5];
+    r[8] = r[0] * r[4] - r[1] * r[3];
+    return out;
+}
+
 double rotationAngle(const Pose3D& pose) {
     const double c = (pose.r[0] + pose.r[4] + pose.r[8] - 1) / 2;
     return std::acos(std::clamp(c, -1.0, 1.0));  // clamp: rounding can push |c| past 1

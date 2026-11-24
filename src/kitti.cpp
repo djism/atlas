@@ -28,10 +28,15 @@ double medianOf(std::vector<double> values) {
 KittiScan readKittiScan(const std::string& path) {
     static_assert(sizeof(float) == 4, "KITTI scans store 32-bit floats");
     if (!littleEndian()) throw std::runtime_error("KITTI scans are little-endian; this machine is not");
-    std::ifstream file(path, std::ios::binary);
+    std::ifstream file(path, std::ios::binary | std::ios::ate);  // open at the end: tellg() is the size
     if (!file) throw std::runtime_error("cannot open KITTI scan: " + path);
-    const std::vector<char> bytes((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
-    if (file.bad()) throw std::runtime_error("cannot read KITTI scan: " + path);
+    const std::streamoff size = file.tellg();
+    if (size < 0) throw std::runtime_error("cannot read KITTI scan: " + path);
+    // One bulk read. (Reading through istreambuf_iterator, one char at a time,
+    // took 11 % of a whole odometry run in a profile.)
+    std::vector<char> bytes(static_cast<std::size_t>(size));
+    file.seekg(0);
+    if (size > 0 && !file.read(bytes.data(), size)) throw std::runtime_error("cannot read KITTI scan: " + path);
     constexpr std::size_t record = 4 * sizeof(float);
     if (bytes.size() % record != 0)
         throw std::runtime_error("KITTI scan size " + std::to_string(bytes.size()) +
@@ -123,6 +128,19 @@ std::vector<Pose3D> velodynePoses(const std::vector<Pose3D>& camera_poses, const
     return out;
 }
 
+std::vector<Point3D> correctKittiScan(const std::vector<Point3D>& points) {
+    const double angle = 0.205 * std::acos(-1.0) / 180;
+    std::vector<Point3D> out;
+    out.reserve(points.size());
+    for (const Point3D& p : points) {
+        // Axis p x z = (p.y, -p.x, 0); rotating about it by +angle lifts p toward +z.
+        const double n = std::hypot(p.x, p.y);
+        if (n < 1e-12) { out.push_back(p); continue; }
+        out.push_back(transformPoint3D(p, rotationFromVector({angle * p.y / n, -angle * p.x / n, 0})));
+    }
+    return out;
+}
+
 double sweepFraction(const Point3D& p, SweepDirection direction) {
     const double pi = std::acos(-1.0);
     const double azimuth = std::atan2(p.y, p.x);  // (-pi, pi], 0 = forward, +pi/2 = left
@@ -137,6 +155,26 @@ std::vector<Point3D> deskewScan(const std::vector<Point3D>& points, const Pose3D
     for (const Point3D& p : points)
         out.push_back(transformPoint3D(p, scaleMotion(sweep_motion, sweepFraction(p, direction) - 0.5)));
     return out;
+}
+
+std::vector<Pose3D> cameraPoses(const std::vector<Pose3D>& velodyne_poses, const Pose3D& velodyne_in_camera) {
+    const Pose3D camera_in_velodyne = inversePose3D(velodyne_in_camera);
+    std::vector<Pose3D> out;
+    out.reserve(velodyne_poses.size());
+    for (const Pose3D& v : velodyne_poses)
+        out.push_back(composePoses3D(composePoses3D(velodyne_in_camera, v), camera_in_velodyne));
+    return out;
+}
+
+void writeKittiPoses(const std::string& path, const std::vector<Pose3D>& poses) {
+    std::FILE* f = std::fopen(path.c_str(), "w");
+    if (!f) throw std::runtime_error("cannot write poses: " + path);
+    for (const Pose3D& p : poses) {
+        const double v[12] = {p.r[0], p.r[1], p.r[2], p.t.x, p.r[3], p.r[4], p.r[5], p.t.y, p.r[6], p.r[7], p.r[8], p.t.z};
+        for (int i = 0; i < 12; ++i) std::fprintf(f, i ? " %.9e" : "%.9e", v[i]);
+        std::fputc('\n', f);
+    }
+    if (std::fclose(f) != 0) throw std::runtime_error("cannot write poses: " + path);
 }
 
 std::string kittiScanPath(const std::string& dir, std::size_t index) {

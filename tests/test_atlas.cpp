@@ -26,6 +26,7 @@
 #include <limits>
 #include <random>
 #include <stdexcept>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -1566,6 +1567,107 @@ int main() {
         near(cmp.length, expected_length, "trajectory comparison: path length");
         rejects([] { compareTrajectories({Pose3D{}}, {Pose3D{}}); }, "trajectory comparison: too short");
     }
+    // ---- Re-orthonormalization, KITTI scan correction, metric, local map ----
+    {
+        // The odometry feedback loop: motion = inverse(previous) * pose, fed into
+        // the next guess. With a slightly imperfect rotation the error grows each
+        // step (inverse by transpose is exact only for rotations); snapping back
+        // keeps it at rounding level.
+        Pose3D bent = rotationFromVector({0.01, -0.02, 0.03});
+        bent.r[0] += 1e-9;  // a rounding-sized flaw
+        const auto loop = [&](bool snap) {
+            Pose3D pose = bent, motion = bent;
+            for (int k = 0; k < 60; ++k) {
+                const Pose3D next = composePoses3D(pose, motion);
+                motion = relativePose3D(pose, next);
+                pose = next;
+                if (snap) { motion = orthonormalized(motion); pose = orthonormalized(pose); }
+            }
+            return orthonormalityError(pose);
+        };
+        check(loop(false) > 1e-3, "feedback loop without snapping: rounding error grows");
+        check(loop(true) < 1e-12, "feedback loop with orthonormalized(): stays a rotation");
+        const Pose3D snapped = orthonormalized(bent);
+        check(orthonormalityError(snapped) < 1e-15 && rotationAngle(relativePose3D(bent, snapped)) < 1e-8,
+              "orthonormalized: nearest rotation, barely moved");
+
+        // KITTI correction: 0.205 deg upward, range unchanged.
+        const auto fixed = correctKittiScan({{10, 0, 0}, {0, 0, 5}});
+        near(std::atan2(fixed[0].z, fixed[0].x), 0.205 * pi / 180, "KITTI correction: 0.205 deg up");
+        near(std::hypot(fixed[0].x, fixed[0].z), 10, "KITTI correction: range unchanged");
+        check(fixed[1].z == 5, "KITTI correction: a point on the z axis is unchanged");
+
+        // KITTI metric: a 300 m straight drive at 1 m per frame; an estimate that
+        // overshoots every step by 1 % has 1 % translation error on every segment.
+        std::vector<Pose3D> truth, over, same;
+        for (int k = 0; k <= 300; ++k) {
+            Pose3D t; t.t = {0, 0, static_cast<double>(k)};  // camera frame: z forward
+            truth.push_back(t);
+            Pose3D o = t; o.t.z *= 1.01;
+            over.push_back(o);
+        }
+        const KittiMetric exact = kittiMetric(truth, truth), off = kittiMetric(over, truth);
+        check(exact.segments > 0 && exact.translation_percent == 0 && exact.rotation_deg_per_100m == 0, "KITTI metric: perfect estimate");
+        check(std::abs(off.translation_percent - 1.0) < 0.02, "KITTI metric: 1% overshoot is 1% error");
+        // Lengths 100, 200 (300 m is never exceeded: dist > 300 needs frame 301): from frames 0..190 and 0..90 every 10.
+        check(off.segments == 20 + 10, "KITTI metric: segments as in the devkit (strictly longer than the length)");
+        const auto cam = cameraPoses(velodynePoses(over, rotationFromVector({0.1, 0.2, 0.3})), rotationFromVector({0.1, 0.2, 0.3}));
+        check(std::abs(cam[200].t.z - over[200].t.z) < 1e-9, "cameraPoses undoes velodynePoses");
+
+        LocalMap3D map(1.0, 3);
+        map.insert({{0.1, 0.1, 0.1}, {0.2, 0.2, 0.2}, {0.3, 0.3, 0.3}, {0.4, 0.4, 0.4}, {50, 0, 0}});
+        check(map.size() == 4 && map.voxels() == 2, "local map: at most 3 points per voxel");
+        Point3D q; double d;
+        check(map.nearest({0.35, 0.35, 0.35}, 1.0, q, d) && q.x == 0.3, "local map: nearest");
+        map.removeFarFrom({0, 0, 0}, 10);
+        check(map.size() == 3 && map.voxels() == 1, "local map: far voxels removed");
+        rejects([] { LocalMap3D bad(1.0, 0); }, "local map: zero points per voxel");
+    }
+    // ---- Scan-to-map odometry on the synthetic street ----
+    {
+        std::mt19937_64 gen(21);
+        std::uniform_real_distribution<double> u(0, 1);
+        // A long street (road, walls, poles every 10 m, cross walls every 25 m), sampled
+        // afresh each frame around the sensor; the sensor drives 1.2 m per frame with a slow turn.
+        const auto scanAt = [&](const Pose3D& sensor) {
+            std::vector<Point3D> world;
+            const double x0 = sensor.t.x;
+            for (int i = 0; i < 8000; ++i) world.push_back({x0 - 40 + 80 * u(gen), -8 + 16 * u(gen), -1.7});
+            for (int i = 0; i < 4000; ++i) world.push_back({x0 - 40 + 80 * u(gen), i % 2 ? 8.0 : -8.0, -1.7 + 4 * u(gen)});
+            for (double px = std::floor((x0 - 40) / 10) * 10; px < x0 + 40; px += 10)
+                for (int i = 0; i < 80; ++i) { const double a = 2 * pi * u(gen); world.push_back({px + 0.2 * std::cos(a), 4 + 0.2 * std::sin(a), -1.7 + 3 * u(gen)}); }
+            // Cross walls (doorways, building fronts) on both sides every 12 m: forward
+            // evidence. With them every 25 m on one side only, the estimate fell 2.1 m
+            // short over 47 m: a hallway again once thinning leaves few points on them.
+            for (double wx = std::floor((x0 - 40) / 12) * 12; wx < x0 + 40; wx += 12)
+                for (int i = 0; i < 600; ++i) world.push_back({wx, i % 2 ? -8 + 3 * u(gen) : 5 + 3 * u(gen), -1.7 + 3 * u(gen)});
+            return transformPoints(world, inversePose3D(sensor));
+        };
+        MapOdometryOptions o;
+        o.deskew = false;  // synthetic scans are instantaneous
+        MapOdometry3D odometry(o);
+        Pose3D sensor{}, step = rotationFromVector({0, 0, 0.004});
+        step.t = {1.2, 0, 0};
+        std::vector<Pose3D> estimate, truth;
+        for (int k = 0; k < 40; ++k) {
+            estimate.push_back(odometry.update(scanAt(sensor)).pose);
+            truth.push_back(sensor);
+            sensor = composePoses3D(sensor, step);
+        }
+        // Frame 1 starts from a zero guess (no velocity yet) 1.2 m from the truth; in
+        // this sparse synthetic street it sometimes stays near zero (4 of 8 seeds:
+        // 1.19 to 1.27 m off). From frame 1 on, measured over 8 seeds: end 0.06 to
+        // 0.21 m, worst step 0.05 to 0.14 m. Bounds above that spread.
+        std::vector<Pose3D> from1, truth1;
+        for (std::size_t k = 1; k < estimate.size(); ++k) {
+            from1.push_back(relativePose3D(estimate[1], estimate[k]));
+            truth1.push_back(relativePose3D(truth[1], truth[k]));
+        }
+        const auto cmp = compareTrajectories(from1, truth1);
+        check(cmp.end_error < 0.35 && *std::max_element(cmp.step_translation_error.begin(), cmp.step_translation_error.end()) < 0.25,
+              "scan-to-map odometry: 46 m of synthetic street from frame 1, within 35 cm");
+        check(orthonormalityError(estimate.back()) < 1e-12, "scan-to-map odometry: poses stay proper rotations");
+    }
     // ---- Bird's-eye images ----
     {
         // 4 x 4 pixels of 1 m around the sensor. Forward (+x) is up, left (+y) is left.
@@ -1594,6 +1696,35 @@ int main() {
         const auto pixel = [&](int row, int column) { return static_cast<unsigned char>(bmp[54 + (4 - row) * 16 + 3 * column]); };
         check(pixel(1, 2) < 255 && pixel(3, 2) == 255, "BMP: rows stored bottom-up");
         failsToRead([] { writeBmp(birdsEyeView({}, 1, 1), "no_such_dir/x.bmp"); }, "BMP: unwritable path");
+    }
+    // ---- Trajectory plot (SVG) ----
+    {
+        // A path 10 m forward then 10 m left, plus one named with XML characters.
+        const std::string svg = trajectorySvg(
+            {{"truth", "#a8a8a8", {{0, 0}, {10, 0}, {10, 10}}}, {"a<b & \"c\"", "#1f5fbf", {{0, 0}, {9, 1}}}}, "test");
+        const auto points_of = [&](std::size_t nth) {  // coordinates of the nth polyline
+            std::size_t at = 0;
+            for (std::size_t i = 0; i <= nth; ++i) at = svg.find("points=\"", at) + 8;
+            std::vector<double> v;
+            std::size_t end = svg.find('"', at);
+            std::string list = svg.substr(at, end - at);
+            for (char& c : list) if (c == ',') c = ' ';
+            std::istringstream in(list);
+            for (double d; in >> d;) v.push_back(d);
+            return v;
+        };
+        const auto truth = points_of(0);
+        check(truth.size() == 6, "plot: one screen point per pose");
+        check(truth.size() == 6 && truth[3] < truth[1] && std::abs(truth[2] - truth[0]) < 1e-9,
+              "plot: forward (+x) is straight up on screen");
+        check(truth.size() == 6 && truth[4] < truth[2] && std::abs(truth[5] - truth[3]) < 1e-9,
+              "plot: left (+y) is to the left on screen");
+        check(truth.size() == 6 && std::abs((truth[1] - truth[3]) - (truth[2] - truth[4])) < 0.2,
+              "plot: equal scale on both axes");
+        check(svg.find("a&lt;b &amp; &quot;c&quot;") != std::string::npos && svg.find("a<b") == std::string::npos,
+              "plot: names are escaped");
+        rejects([] { trajectorySvg({{"empty", "#000", {}}}, "t"); }, "plot: no points");
+        rejects([] { trajectorySvg({{"nan", "#000", {{0, NAN}}}}, "t"); }, "plot: nonfinite point");
     }
     if (failures) return EXIT_FAILURE;
     std::cout << "All geometry, simulation, matching, and motion checks passed.\n";

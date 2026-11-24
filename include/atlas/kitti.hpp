@@ -44,6 +44,13 @@ std::vector<double> readKittiTimes(const std::string& path);
 // (read right to left: Velodyne i -> camera i -> camera 0 -> Velodyne 0).
 std::vector<Pose3D> velodynePoses(const std::vector<Pose3D>& camera_poses, const Pose3D& velodyne_in_camera);
 
+// KITTI's Velodyne scans have a known intrinsic calibration error: beams are
+// about 0.205 deg off in elevation. This rotates every point by 0.205 deg
+// upward about the axis p x z (range unchanged), as KISS-ICP does
+// (Vizzo et al., RA-L 2023; "correct_kitti_scan"). Verified against KISS-ICP's
+// own function on a real scan to 1e-14 m. Points on the z axis are unchanged.
+std::vector<Point3D> correctKittiScan(const std::vector<Point3D>& points);
+
 // Which way the laser head turns, seen from above (+z): Clockwise means the
 // azimuth atan2(y, x) DEcreases with time.
 enum class SweepDirection { Clockwise, Counterclockwise };
@@ -61,6 +68,14 @@ double sweepFraction(const Point3D& point, SweepDirection direction);
 // sensor at the middle (s = 0.5): p_mid = scaleMotion(sweep_motion, s - 0.5) * p.
 std::vector<Point3D> deskewScan(const std::vector<Point3D>& points, const Pose3D& sweep_motion,
                                 SweepDirection direction);
+
+// The reverse of velodynePoses: camera_i_in_camera_0 = Tr * velodyne_i * Tr^-1
+// (the devkit scores trajectories in the camera frame).
+std::vector<Pose3D> cameraPoses(const std::vector<Pose3D>& velodyne_poses, const Pose3D& velodyne_in_camera);
+
+// Writes poses as KITTI pose lines (12 numbers, row-major [R | t], %.9e).
+// Throws std::runtime_error if the file cannot be written.
+void writeKittiPoses(const std::string& path, const std::vector<Pose3D>& poses);
 
 // File of frame `index` in a KITTI velodyne data folder: dir/0000000042.bin.
 std::string kittiScanPath(const std::string& dir, std::size_t index);
