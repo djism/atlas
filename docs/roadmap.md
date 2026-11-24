@@ -183,6 +183,15 @@ committed (CC BY-NC-SA 3.0 notice alongside), decided with the user.
 
 ### Phase 6+ — Extensions (after the flagship)
 
+Status 2026-11-24: started with loop closure (docs/slam.md). Step 1 done: a
+3D pose-graph optimizer (Levenberg-Marquardt, dense Cholesky, pose 0 fixed),
+tested on a synthetic loop (3.47 m RMS drift to 0.034 m). Then keyframes,
+loop candidates, geometric verification (4/4 loops accepted, 4/4 decoys
+rejected) and loop closure on held-out sequence 07: position error 1.13 ->
+0.81 m RMS, end error 0.80 -> 0.11 m, KITTI metric unchanged; a wrong loop
+makes it worse than none. Not yet: place recognition, a robust back end,
+online operation, more loop data.
+
 - Keyframes, geometrically verified loop closure, pose-graph optimization; show
   drift reduction on real sequences (moves Atlas from odometry toward full SLAM).
 - **Planner module**, separate from localization and labeled as such: occupancy-grid

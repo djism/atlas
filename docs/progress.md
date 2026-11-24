@@ -778,6 +778,88 @@ without interaction (dragging is not recorded).
 Run docs/visitor-test.md with three people; or Phase 6 (loop closure on
 sequence 07).
 
+## 2026-11-24 (session 6) — Phase 6 step 1: pose-graph optimizer
+
+### Implemented
+
+- `posegraph3d.hpp/cpp`: edge residual (measured^-1 * relative pose),
+  Levenberg-Marquardt over all poses but the first, numerical Jacobians,
+  dense Cholesky. Added to CMake.
+
+### Lessons
+
+- A pose graph is springs: each measurement pulls; the weights say how stiff.
+  Two disagreeing measurements end at their weighted average.
+- Why loop closures must be verified: one wrong loop bends the whole map.
+- The first pose must be fixed, or the problem has no unique answer.
+- A test's expected value can be the bug: my hand-computed Cholesky answer was
+  wrong; an exact fraction solve settled it.
+
+### Validation
+
+Synthetic loop: 3.47 m RMS drift to 0.034 m in 5 iterations; consistent
+graph unchanged; weighted averages exact; wrong loop over 3x worse than the
+right one. Four deliberate breaks each caught (one only after adding a test).
+
+### Next smallest step
+
+Keyframes every few metres on sequence 07 and loop candidates (old keyframes
+near the current one), printing what is found before any optimization.
+
+## 2026-11-24 (session 6, step 2) — keyframes and loop candidates
+
+- `loopclosure3d.hpp/cpp`: `selectKeyframes` (5 m / 15 deg), `pathLengths`,
+  `findLoopCandidates` (nearest earlier keyframe within 10 m in the estimate,
+  at least 50 m back along the path). `atlas_kitti loops`.
+- Sequence 07: 143 keyframes, 4 candidates, all at the end of the drive
+  returning to its start, all truly within 8.5 m. Sequence 04: none.
+- Lesson: my first grading was circular (real = within the search radius);
+  the real test of a loop is whether its scans align to the right pose.
+- Tests for keyframes and candidates; dropping the path-gap rule fails three.
+
+### Next smallest step
+
+Verify each candidate: ICP between the later keyframe's scan and a local map
+around the earlier keyframe, starting from the odometry guess; accept on
+fitness; grade the resulting relative pose against the answer key; show a
+deliberately wrong candidate rejected.
+
+## 2026-11-24 (session 6, step 3) — loop verification
+
+- `buildSubmap`, `verifyLoop` (two-pass ICP, fit on structure above the road);
+  `atlas_kitti verify-loops` with a decoy per candidate; saves accepted loops.
+- Sequence 07: 4 of 4 loops accepted, 4 of 4 decoys rejected (fit 77-95 % vs
+  9-14 %). Verified relative poses 0.04-0.36 m from the answer key (guess
+  0.72-0.80 m).
+- Lessons: road points match anywhere, so judge fit on structure; a suspected
+  cause (road rings) was tested, did not help, and was reverted; the four
+  loops agree with each other to 2-9 cm, and Atlas and KISS-ICP agree with
+  each other against the answer key (0.43 m sideways over 15 m at the end of
+  the drive): the answer key has local decimetre errors.
+
+### Next smallest step
+
+Build the pose graph (keyframes, odometry edges, the four loops), optimize,
+and measure before/after: absolute trajectory error, KITTI metric, end error.
+Choose edge weights from measured noise, not by hand.
+
+## 2026-11-24 (session 6, step 4) — loop closure measured
+
+- `closeLoops()`, `atlas_kitti close-loops`. Weights from sequence 04's drift.
+- Sequence 07 (held out): position RMS 1.13 -> 0.81 m, worst 2.10 -> 1.40 m,
+  end 0.80 -> 0.11 m, KITTI t_err 0.43 -> 0.42 %. Sequence 04 unchanged.
+- One wrong loop (shifted 5 m) among three right ones: end 1.24 m, t_err
+  0.49 %: worse than no loop closure.
+- Lesson: a loop at the end fixes the end best; a mid-drive bulge needs more
+  loops. The KITTI metric is the wrong lens for loop closure; position error
+  is the right one.
+
+### Next smallest step
+
+Show it: loop closure in the replay explorer (estimate before and after,
+the four loops drawn), mocked up first. Or a robust back end (switchable
+loop edges) tested with the wrong-loop case.
+
 ### Daily checkpoint template
 
 - Concept understood:

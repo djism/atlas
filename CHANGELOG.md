@@ -150,6 +150,19 @@
   shared link replays the exact run on any machine. A restart now puts the
   robot back at its start. `?trace=1` records the run for tests.
 - `docs/visitor-test.md`: a script for the first-visitor test.
+- Phase 6 started: `optimizePoseGraph3D()` (3D pose graph, Levenberg-Marquardt,
+  pose 0 fixed), `edgeResidual3D()`, `solveCholesky()`; tests on a synthetic
+  loop, weights, and a wrong loop. Documented in docs/slam.md.
+- `selectKeyframes()`, `pathLengths()`, `findLoopCandidates()` and
+  `atlas_kitti loops`: sequence 07 has 4 loop candidates (end of drive back to
+  its start), sequence 04 none.
+- `buildSubmap()`, `verifyLoop()` and `atlas_kitti verify-loops`: all 4 loops
+  on sequence 07 accepted, 4 of 4 decoys rejected; fit judged on structure
+  above the road.
+- `closeLoops()` and `atlas_kitti close-loops`: keyframe pose graph with
+  verified loops, weights from sequence 04's measured drift. Sequence 07:
+  position error 1.13 -> 0.81 m RMS, end error 0.80 -> 0.11 m; sequence 04
+  unchanged.
 
 ## 0.1.0 — 2026-11-04
 

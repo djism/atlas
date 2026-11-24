@@ -224,7 +224,10 @@ commits or schedule unattended pushes.
       in 3D (Atlas's own map, each scan, estimated vs true paths), with per-frame errors and the
       engine's own diagnostics, data-chosen "jump to" frames and shareable frame links; labeled
       replay throughout. See [replay](docs/replay.md)
-- [ ] **Later:** loop closure and pose graph, a separate planner module,
+- [ ] **Phase 6 (started):** loop closure: pose graph, keyframes, loop candidates, geometric
+      verification. Held-out sequence 07: position error 1.13 -> 0.81 m RMS, end error 0.80 ->
+      0.11 m. See [SLAM](docs/slam.md)
+- [ ] **Later:** a separate planner module,
       street-car and warehouse-robot scenarios, challenge mode
 
 See [docs/roadmap.md](docs/roadmap.md) for goals, done criteria, architecture,
