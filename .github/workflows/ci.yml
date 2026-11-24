@@ -18,3 +18,16 @@ jobs:
         run: ctest --test-dir build --output-on-failure
       - name: Run demo
         run: ./build/atlas_demo
+  # The distributed evaluation system (eval/): unit tests with a fake clock,
+  # HTTP tests, and a crash/recovery run with real processes (test jobs; CI
+  # has no KITTI data). Linux only: macOS runners are scarce and these tests
+  # use nothing platform-specific beyond POSIX signals.
+  eval:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Evaluation system tests (Python standard library only)
+        run: python -m unittest discover -s eval/tests -v
