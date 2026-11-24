@@ -108,7 +108,9 @@ failed in every seed.
 
 ## Browser sandbox
 
-**Live: https://djism.github.io/atlas/** (published from `main` by CI).
+**Live: https://djism.github.io/atlas/** (published from `main` by CI). Its
+"Real data" section shows the recorded KITTI results (paths, table, per-stretch
+errors), labeled as recorded, not live.
 
 `web/` is an interactive site where the same C++ engine, compiled to WebAssembly,
 simulates the LiDAR, builds a map, localizes the robot against it, matches scans,

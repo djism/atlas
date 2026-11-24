@@ -630,6 +630,32 @@ Phase 4: a coordinator and workers that run (sequence, configuration) jobs
 like the two above, with leases, retries and durable, idempotent results.
 More sequences (e.g. a highway one) would make the Phase 4 sweep meaningful.
 
+## 2026-11-24 (session 2) — real-data results on the website
+
+### Implemented
+
+- "Real data" section after "What I built": drive switch (07 held out, 04
+  tuned on), top-down paths with on/off chips, results table, per-stretch
+  step-error bars, three notes, credits. Labeled "recorded offline, not
+  running live in this page"; footer now says which parts are live.
+- `tools/export_web_results.py` (standard library only) writes
+  `web/src/data/kittiPaths.ts`; `web/src/lib/kittiPlot.ts` fits paths on
+  equal axes. Approved mock-up first (claude.ai design canvas).
+
+### Validation
+
+5 new unit tests (orientation, equal scale, fit and centering, start marker
+and scale bar, bad input); flipping the vertical axis fails 2, removing the
+centering fails 1. New smoke test (switch drives, verdict, bar counts, a
+hidden path); all 7 smoke tests pass locally. The standard-library export
+reproduces the numpy per-stretch errors exactly. Checked by screenshot at
+1440 px and 390 px: no sideways scroll, no console errors.
+
+### Limitations
+
+Table numbers are typed from docs/kitti.md, not generated; paths are every
+third pose. Static recorded results, not the Phase 5 replay explorer.
+
 ### Daily checkpoint template
 
 - Concept understood:

@@ -118,6 +118,10 @@
   top-down, equal axes).
 - Held-out sequence 07 (694 m, nothing changed): Atlas scan-to-map 0.43 % /
   0.25 deg per 100 m, 28 ms per scan, 106 MB; KISS-ICP 0.75 % / 0.37. Phase 3 done.
+- Website: "Real data" section with the recorded KITTI results (drive switch,
+  path toggles, results table, per-stretch step errors), labeled as recorded.
+  `tools/export_web_results.py` (standard library only) writes its path data;
+  `web/src/lib/kittiPlot.ts` lays it out (unit-tested); a smoke test covers it.
 
 ## 0.1.0 — 2026-11-04
 
