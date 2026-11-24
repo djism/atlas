@@ -134,6 +134,22 @@
 - Fixed (found by that sweep): a finished job's late heartbeat could cancel
   the worker's next job; a coordinator outage longer than a lease re-ran
   healthy jobs (now restart grace).
+- Phase 5: replay explorer (`web/replay/`, second page of the site): KITTI
+  sequences 07 and 04 in 3D with Atlas's own map and every (thinned) scan,
+  estimated / true / KISS-ICP paths, per-frame errors and engine
+  diagnostics, timeline charts, playback, data-chosen jump frames,
+  shareable `?seq=&frame=` links. Home-page error bars link into it.
+- `atlas_kitti run ... diag=` (per-frame ICP log) and `atlas_kitti
+  export-replay`; `tools/export_replay.py`. About 9.8 MB of KITTI-derived
+  replay data in `web/public/replay/` (CC BY-NC-SA 3.0 notice alongside).
+- Lab charts: pass-by-pass pair RMSE vs error against the answer key (Match
+  two scans) and a 35 s log-scale history of both estimators' error with a
+  map-match strip (Get it lost).
+- **Changed:** the sandbox simulation runs in lockstep on simulated time
+  (fixed ticks; engine answers take effect at a fixed simulated delay), so a
+  shared link replays the exact run on any machine. A restart now puts the
+  robot back at its start. `?trace=1` records the run for tests.
+- `docs/visitor-test.md`: a script for the first-visitor test.
 
 ## 0.1.0 — 2026-11-04
 

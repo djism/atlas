@@ -3,7 +3,7 @@
 **Learning vehicle motion estimation and SLAM through a C++ implementation.**
 
 Latest release: **v0.1.0 — 2D geometry and motion recovery with known correspondences.**
-In progress (unreleased, roadmap Phases 1, 3 and 4 complete): least-squares alignment, point-to-point
+In progress (unreleased, roadmap Phases 1, 3, 4 and 5 complete): least-squares alignment, point-to-point
 and point-to-line 2D ICP, ray-cast LiDAR, scan tracking, an occupancy-grid map, scan-to-map
 localization with degeneracy handling, a scripted experiment, a simplified planner, a live
 browser sandbox running the C++ engine via WebAssembly, and 3D LiDAR odometry on real KITTI
@@ -111,7 +111,8 @@ failed in every seed.
 
 **Live: https://djism.github.io/atlas/** (published from `main` by CI). Its
 "Real data" section shows the recorded KITTI results (paths, table, per-stretch
-errors), labeled as recorded, not live.
+errors), labeled as recorded, not live, and links into the **replay explorer**
+(https://djism.github.io/atlas/replay/), which steps through those drives scan by scan.
 
 `web/` is an interactive site where the same C++ engine, compiled to WebAssembly,
 simulates the LiDAR, builds a map, localizes the robot against it, matches scans,
@@ -199,7 +200,9 @@ commits or schedule unattended pushes.
       check, ray-cast LiDAR, point-to-line ICP, scan tracking, occupancy-grid map,
       scan-to-map localization, degeneracy handling, scripted experiment
       (known failure: short sensor range; holds with decent wheel odometry)
-- [ ] **Phase 2:** interactive sandbox v1 — nearly done: engine in the browser
+- [ ] **Phase 2:** interactive sandbox v1 — done except a first-visitor test (script ready:
+      [visitor test](docs/visitor-test.md)); residual and error charts and exact replay of
+      shared links added 2026-11-24: engine in the browser
       (WebAssembly), home-robot scenario with a live 3D lab, map localizer vs
       tracker, robot plans and steers from its estimate, simulated wheel
       odometry, shareable links, deployed to GitHub Pages behind browser smoke
@@ -217,7 +220,10 @@ commits or schedule unattended pushes.
       tokens, retries with backoff, content-addressed durable results, restart grace. A 24-job
       KITTI sweep survived a worker crash, a coordinator crash and restart, and a paused worker:
       every job done with exactly one accepted result. See [evaluation](docs/evaluation.md)
-- [ ] **Phase 5:** replay explorer for real-data results
+- [x] **Phase 5:** replay explorer for real-data results — scrub through recorded KITTI drives
+      in 3D (Atlas's own map, each scan, estimated vs true paths), with per-frame errors and the
+      engine's own diagnostics, data-chosen "jump to" frames and shareable frame links; labeled
+      replay throughout. See [replay](docs/replay.md)
 - [ ] **Later:** loop closure and pose graph, a separate planner module,
       street-car and warehouse-robot scenarios, challenge mode
 

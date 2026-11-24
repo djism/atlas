@@ -100,6 +100,12 @@ shows these as numbers) and exact replay. The 30-second criterion below has
 not been tested with a real first-time visitor. Decision: move to Phase 3 and
 treat these as polish, per "protect Phase 3".
 
+Status 2026-11-24: charts done (pass-by-pass residual vs true error; 35 s
+error and map-match history) and exact replay done (lockstep simulated time;
+a browser test requires two runs of one link, one on a 3x slower CPU, to match
+scan for scan). Remaining: the first-visitor test, which needs real people;
+the script is docs/visitor-test.md.
+
 Done when: a first-time visitor understands what to do within about 30 seconds,
 the UI stays smooth while the engine runs, and every view is labeled live/simulated.
 
@@ -157,13 +163,21 @@ late result refused. The first run exposed a worker bug (a late heartbeat
 cancelled the next job) and a design gap (outage longer than a lease); both
 fixed and regression-tested. Workers ran as processes on one machine.
 
-### Phase 5 — Replay explorer (target: weeks 7–8)
+### Phase 5 — Replay explorer (done 2026-11-24)
 
 Goal: let visitors inspect the real-data results.
 
 - Three.js view of point clouds, estimated vs reference trajectory, per-frame
   residuals and inliers, timeline scrubbing; clearly labeled **replay**.
 - Links from the results table into the exact frames where failures occur.
+
+Status 2026-11-24: done (docs/replay.md; live at /atlas/replay/). Sequences
+07 and 04: Atlas's own map, every scan (thinned), estimated vs true vs
+KISS-ICP paths, per-frame step error, drift, inliers, ICP iterations,
+adaptive threshold and time from the engine's own log; scrubbing, playback,
+cameras, data-chosen "jump to" frames, shareable frame links; the home page's
+error bars open the matching stretch. About 9.8 MB of KITTI-derived data is
+committed (CC BY-NC-SA 3.0 notice alongside), decided with the user.
 
 **End of the ~8-week flagship:** Phases 1–5. If time runs short, protect Phase 3.
 

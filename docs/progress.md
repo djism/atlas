@@ -700,6 +700,84 @@ kill -9, no garbage collection of rejected results.
 Phase 5: a replay explorer for these recorded results (clearly labeled
 replay), or more KITTI sequences for the sweep.
 
+## 2026-11-24 (session 4) — Phase 5: replay explorer
+
+### Implemented
+
+- Mock-up from real data (frame 476 of sequence 07), approved; built as a
+  second page of the site with Three.js, React and pure helpers.
+- C++: `run ... diag=` per-frame log (poses unchanged, byte for byte) and
+  `export-replay` (Atlas's own map, thinned scans). `tools/export_replay.py`.
+- Home-page error bars and an "Open the replay explorer" button link in.
+
+### Lessons
+
+- Looking frame by frame finds what averages hide: Atlas's worst steps are
+  sharp turns (7-8 cm at frames 476 and 916) while 99 %+ of points still
+  match, so inlier counts would not flag them; KISS-ICP's worst is a fast
+  straight (frames 247-267, up to 20 cm).
+- Draw the map from the estimator's own poses, not the truth: then the map
+  shows the drift the robot really had.
+- Colour carries meaning: a strong-blue map hid the live scan; a quiet
+  blue-gray map lets the scan (the only bright blue points) read at once.
+
+### Validation
+
+8 new unit tests (decoding, consistency, links, charts, notable frames,
+headlines, committed data); 2 browser tests extended or added (page,
+home-page link, phone width), passing with a GPU and with software WebGL on
+a 3x slower CPU. All 8 smoke tests and 22 unit tests pass.
+
+### Limitations
+
+Replay only; scans thinned to 640 points; not deskewed in the view; two
+sequences; about 9.8 MB of derived data in Git.
+
+### Next smallest step
+
+Phase 6 candidates: loop closure on sequence 07 (it ends 9.5 m from its
+start), more KITTI sequences in the sweep, or Phase 2 polish (charts in the
+lab, a first-visitor test).
+
+## 2026-11-24 (session 5) — Phase 2 polish: charts and exact replay
+
+### Implemented
+
+- Lab charts (mock-up from real lab readings, approved): pass-by-pass
+  residual vs true error; 35 s error history (log scale) and map match.
+- Lockstep simulation: fixed 20 ms ticks of simulated time, scan answers and
+  routes take effect at a fixed simulated delay, the world waits for late
+  answers, bump/replan timing in ticks, restart rewinds the robot and seeds.
+- `?trace=1` run recording; docs/visitor-test.md for the human test.
+
+### Lessons
+
+- Determinism under async work: do not apply results when they arrive; apply
+  them at a time fixed in simulated time, and make time wait if they are late.
+- A test for "the same" must be able to fail: applying answers on arrival
+  made the exact-replay test fail; a first attempt at that check did not even
+  compile, so it silently tested the old build. Check the build step too.
+- Residual is not error: in the ICP demo the pair RMSE stops at 1.1 cm while
+  the true error is 3.7 mm. The chart now shows both.
+- Errors span mm to m in the lab: only a log scale shows both estimators.
+
+### Validation
+
+5 new unit tests (27 total); smoke tests extended (pass bars, history lines)
+and a new exact-replay test (150 scans identical at normal speed and with a
+3x slower CPU); all 9 smoke tests pass with a GPU and with software WebGL on
+a 3x slower CPU.
+
+### Limitations
+
+The first-visitor test still needs real people. Exact replay holds only
+without interaction (dragging is not recorded).
+
+### Next smallest step
+
+Run docs/visitor-test.md with three people; or Phase 6 (loop closure on
+sequence 07).
+
 ### Daily checkpoint template
 
 - Concept understood:
