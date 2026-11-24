@@ -71,6 +71,11 @@ test("match two scans: ICP converges near the answer key", async ({ page }) => {
   await page.goto("./?lab=match#lab");
   await expect(panelChip(page)).toHaveText("Converged", { timeout: 30_000 });
   expect(await meters(page, "Error")).toBeLessThan(0.01);
+  // The pass chart has one bar per completed pass, as many as the Pass readout says.
+  const passes = Number(/\/ (\d+)/.exec(await metric(page, "Pass").innerText())![1]);
+  const chart = page.getByTestId("pass-chart");
+  await expect(chart.locator("rect.lc-bar")).toHaveCount(passes);
+  await expect(chart.locator("circle.lc-dot")).toHaveCount(passes + 1);
 });
 
 test("get it lost: the map localizer stays on track", async ({ page }) => {
@@ -81,6 +86,11 @@ test("get it lost: the map localizer stays on track", async ({ page }) => {
   expect(Math.max(...errors), "worst map-localizer error over 10 s").toBeLessThan(0.05);
   const match = await sample(page, () => percent(page, "Map match"));
   expect(median(match), "median map match").toBeGreaterThanOrEqual(80);
+  // After 20 s of readings, the history chart draws both estimators.
+  const chart = page.getByTestId("lost-chart");
+  await expect(chart.locator("polyline.lc-map")).not.toHaveCount(0);
+  await expect(chart.locator("polyline.lc-nomap")).not.toHaveCount(0);
+  expect(await chart.locator("rect.lc-match, rect.lc-lost").count()).toBeGreaterThan(20);
 });
 
 test("shared link: the map comes from the house as it was when mapped", async ({ page }) => {
@@ -158,4 +168,22 @@ test("replay explorer: a recorded drive loads, scrubs, jumps, plays and switches
   expect(after).toBeGreaterThan(749); // playback advanced
   await page.getByRole("button", { name: "Sequence 04" }).click();
   await expect(page.getByTestId("frame-stamp")).toContainText("Frame 0 / 270", { timeout: 30_000 });
+});
+
+test("exact replay: the same link gives the same run, even on a 3x slower CPU", async ({ page }) => {
+  // 15 s of simulated time at a short sensor range (the no-map tracker drifts,
+  // the robot bumps and replans: plenty of chances for timing to leak in).
+  const SCANS = 150;
+  const run = async () => {
+    await page.goto("./?lab=lost&range=3&trace=1#lab");
+    await page.waitForFunction((n) => ((window as unknown as { __atlasTrace?: unknown[] }).__atlasTrace?.length ?? 0) >= n,
+      SCANS, { timeout: 150_000, polling: 250 });
+    return page.evaluate((n) => (window as unknown as { __atlasTrace: unknown[] }).__atlasTrace.slice(0, n), SCANS);
+  };
+  const normal = await run();
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send("Emulation.setCPUThrottlingRate", { rate: 3 });
+  const slow = await run();
+  await cdp.send("Emulation.setCPUThrottlingRate", { rate: 1 });
+  expect(slow).toEqual(normal); // every pose of every scan, bit for bit
 });

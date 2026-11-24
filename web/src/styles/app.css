@@ -274,6 +274,36 @@ a.rd-pair:focus-visible { outline: 2px solid var(--signal); outline-offset: 2px;
   .panel { position: static; width: auto; max-height: none; margin: var(--s-4); box-shadow: none; border: 1px solid var(--line); }
 }
 
+/* ---------- lab charts (LabCharts.tsx) ---------- */
+.lc { margin: 0; display: flex; flex-direction: column; gap: 6px; }
+.lc figcaption { display: flex; justify-content: space-between; align-items: baseline; font: 500 10.5px/1.2 var(--font-mono); letter-spacing: 0.06em; text-transform: uppercase; color: var(--dim); }
+.lc-note { text-transform: none; letter-spacing: 0; }
+.lc-row { display: grid; grid-template-columns: 34px minmax(0, 1fr); column-gap: 6px; align-items: center; }
+.lc-row svg { width: 100%; display: block; background: #f7f8f9; border-radius: 6px; }
+.lc-ticks { position: relative; font: 500 10px/1 var(--font-mono); color: var(--dim); }
+.lc-ticks span { position: absolute; right: 0; white-space: nowrap; }
+.lc-side { font: 500 10px/1.1 var(--font-mono); color: var(--dim); }
+.lc-grid { stroke: #e3e6ea; stroke-width: 1px; vector-effect: non-scaling-stroke; }
+.lc polyline { fill: none; stroke-linejoin: round; vector-effect: non-scaling-stroke; }
+.lc-map { stroke: var(--signal); stroke-width: 2px; }
+.lc-nomap { stroke: var(--baseline); stroke-width: 2px; }
+.lc-match { fill: var(--ink-soft); }
+.lc-lost { fill: var(--bad); opacity: 0.55; }
+.lc-bar { fill: #c9ccd2; }
+.lc-bar-now { fill: #9aa0aa; }
+.lc-err { stroke: var(--signal); stroke-width: 2px; }
+.lc-dot { fill: var(--paper); stroke: var(--signal); stroke-width: 2px; }
+.lc-passes { position: relative; height: 12px; font: 500 10px/1 var(--font-mono); color: var(--dim); }
+.lc-passes span { position: absolute; transform: translateX(-50%); white-space: nowrap; }
+.lc-key { display: flex; flex-wrap: wrap; gap: 6px 14px; padding-left: 40px; font: 500 11px/1.2 var(--font-mono); color: var(--dim); }
+.lc-key span { display: inline-flex; align-items: center; gap: 6px; }
+.lc-sw { display: inline-block; }
+.lc-sw-map { width: 14px; height: 2px; background: var(--signal); }
+.lc-sw-nomap { width: 14px; height: 2px; background: var(--baseline); }
+.lc-sw-lost { width: 8px; height: 8px; background: var(--bad); opacity: 0.55; }
+.lc-sw-bar { width: 10px; height: 10px; border-radius: 2px; background: #c9ccd2; }
+.lc-sw-dot { width: 10px; height: 10px; border-radius: 50%; border: 2px solid var(--signal); box-sizing: border-box; }
+
 /* ---------- footer ---------- */
 .footer {
   padding-block: var(--s-7) 64px; border-top: 1px solid var(--line); display: flex; flex-wrap: wrap;

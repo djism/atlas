@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { engine } from "../engine/client";
+import type { StepResult } from "../engine/protocol";
 import { FIRST_POSE, type IcpDemo } from "../icp/IcpDemo";
 import { composePoses, relativePose, wrapAngle } from "../lib/frames";
 import { layoutOf, type Layout } from "../lib/share";
@@ -48,14 +49,31 @@ export interface FieldOptions {
 
 const BEAMS = 360;
 const GLOW = 24; // scans kept as fading afterglow
-const SCAN_PERIOD = 0.1; // seconds of SIMULATED time between scans: 10 Hz, like a real 2D LiDAR
-const MAX_QUEUED_SCANS = 2; // if the engine falls further behind, the simulated world waits
-const SIM_STEP = 0.02; // seconds: robot motion is integrated in slices this small
+// Lockstep simulation: the world advances in fixed ticks of SIMULATED time, and
+// every engine answer takes effect at a fixed simulated delay. If an answer is
+// late, simulated time waits for it. So the same start (same link, no dragging)
+// gives the same run on any machine and at any frame rate: an exact replay.
+const SIM_STEP = 0.02; // seconds of simulated time per tick
+const SCAN_TICKS = 5; // a scan every 5 ticks = 0.1 s: 10 Hz, like a real 2D LiDAR
+const RESULT_TICKS = 5; // a scan's estimate takes effect 0.1 s (simulated) after capture
+const PLAN_TICKS = 5; // a requested route takes effect 0.1 s (simulated) later
+const PLAN_GAP_TICKS = 5; // at most one plan request per 0.1 s of simulated time
+const MAX_DEBT = 0.25; // seconds: a stalled page never tries to catch up more than this at once
 
 interface ScanCapture {
   pose: Pose; // true pose at capture (simulates the sensor; never given to the estimators)
   odo: Pose; // motion commanded since capture, in the robot frame at capture
+  applyTick: number; // when its estimate takes effect
+  result?: StepResult | "failed"; // the engine's answer, once it arrives
 }
+
+type PlanOutcome =
+  | { status: "found" | "start-blocked" | "no-path"; path: Point[]; goal: number; skipped: number[]; plans: number; ms: number; expanded: number }
+  | "failed";
+interface PendingPlan { applyTick: number; outcome?: PlanOutcome }
+
+/** One applied scan, recorded with ?trace=1 so tests can compare whole runs exactly. */
+export interface TraceEntry { tick: number; truth: Pose; map: Pose | null; tracker: Pose | null; belief: Pose | null }
 const SPEED = 0.6; // m/s
 const TURN_RATE = 3.2; // rad/s
 const BOX = 0.5;
@@ -83,8 +101,8 @@ export class Field {
   private drive: DriveState = "planning";
   private skipped: number[] = [];
   private dirty = true;
-  private planning = false;
-  private lastPlanAt = 0;
+  private pendingPlan: PendingPlan | null = null;
+  private nextPlanTick = 0;
   private plans = 0;
   private lastPlanMs = 0;
   private expanded = 0;
@@ -96,14 +114,17 @@ export class Field {
   noise = 0.01;
   private engineState: FieldStats["engine"] = "loading";
   private scanInFlight = false;
-  // The sensor runs on the simulated clock, not on how fast the page is: every
-  // SCAN_PERIOD of simulated motion, the true pose is captured for one scan.
-  private nextScanIn = 0;
-  // Scans captured but not yet answered. `odo` is the motion commanded since the
-  // capture (in the robot frame at capture), so an estimate for that scan can be
-  // brought up to now: belief = estimate composed with odo.
+  // Simulated clock, in ticks since the last restart, and wall time not yet simulated.
+  private tick = 0;
+  private simDebt = 0;
+  private readonly startPose: Pose;
+  // Scans captured, waiting to be sent to the engine (in order).
   private readonly scanQueue: ScanCapture[] = [];
-  private readonly openCaptures = new Set<ScanCapture>();
+  // Scans captured whose estimate has not taken effect yet, oldest first. `odo` is
+  // the motion commanded since the capture (in the robot frame at capture), so the
+  // estimate can be brought up to the moment it takes effect: belief = estimate + odo.
+  private readonly pendingScans: ScanCapture[] = [];
+  private trace: TraceEntry[] | null = null;
   // Where the robot believes it is: drives planning and steering. Never the truth.
   private belief: Pose | null = null;
   // True pose at this view's previous tracked scan: the wheels are simulated from
@@ -116,7 +137,7 @@ export class Field {
   // Map localizer's prediction: simulated wheel odometry, or constant velocity.
   wheels = true;
   private bumps = 0;
-  private bumpedAt = -1e9;
+  private bumpTick = -1e9;
   private segmentCache: Segment[] | null = null;
   private static nextOwner = 1;
   private readonly owner = Field.nextOwner++;
@@ -199,6 +220,8 @@ export class Field {
     this.furniture = opts.scenario.furniture.map((f) => ({ ...f }));
     const [a, b] = opts.scenario.patrol;
     this.robot = { x: a.x, y: a.y, theta: Math.atan2(b.y - a.y, b.x - a.x) };
+    this.startPose = { ...this.robot };
+    if (opts.mode !== "hero" && new URLSearchParams(window.location.search).has("trace")) this.trace = [];
 
     const R = (this.renderer = new THREE.WebGLRenderer({ antialias: true }));
     R.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
@@ -348,12 +371,29 @@ export class Field {
     this.noise = noise;
   }
 
+  // A restart rewinds the simulation: robot back at its start, clock at zero, the
+  // same noise seeds. With the same furniture, every restart is an exact replay.
   restartTracker(): void {
     this.generation++;
     this.mapObstacles = this.obstacles();
     this.mappedFurniture = this.furniture.map((f) => ({ ...f }));
     this.scanQueue.length = 0;
-    this.openCaptures.clear();
+    this.pendingScans.length = 0;
+    this.pendingPlan = null;
+    this.nextPlanTick = 0;
+    this.tick = 0;
+    this.simDebt = 0;
+    this.seed = 1;
+    this.robot = { ...this.startPose };
+    this.pi = 0;
+    this.goal = 1;
+    this.bumpTick = -1e9;
+    this.trailPts.length = 0;
+    this.setLine(this.trueTrail, this.trailPts);
+    if (this.trace) {
+      this.trace = [];
+      Object.assign(window, { __atlasTrace: this.trace });
+    }
     this.belief = null;
     this.lastTrackedPose = null;
     this.bumps = 0;
@@ -563,7 +603,7 @@ export class Field {
     else {
       this.generation++; // ignore scans in flight from the previous mode
       this.scanQueue.length = 0;
-      this.openCaptures.clear();
+      this.pendingScans.length = 0;
     }
     if (match) this.buildIcp();
     this.tip.classList.remove("on");
@@ -750,55 +790,60 @@ export class Field {
   }
 
   // ===================== engine: planning =====================
-  private maybePlan(now: number): void {
-    if (!this.dirty || this.planning || now - this.lastPlanAt < 90 || this.engineState !== "ready" || !this.belief) return;
-    this.planning = true;
+  // Asks for a route at this tick; it takes effect PLAN_TICKS later (applyDue).
+  private maybePlan(): void {
+    if (!this.dirty || this.pendingPlan || this.tick < this.nextPlanTick || !this.belief) return;
     this.dirty = false;
-    this.plan()
-      .catch(() => {})
-      .finally(() => {
-        this.planning = false;
-        this.lastPlanAt = performance.now();
-      });
+    const req: PendingPlan = { applyTick: this.tick + PLAN_TICKS };
+    this.pendingPlan = req;
+    this.plan({ ...this.belief }, this.goal, this.obstacles())
+      .then((o) => (req.outcome = o))
+      .catch(() => (req.outcome = "failed"));
   }
 
-  // Plans from where the robot BELIEVES it is (its estimate), with the true floor
-  // plan (simplified: a real robot would plan on its map), trying patrol points
-  // in order until one is reachable.
-  private async plan(): Promise<void> {
-    const from = this.belief;
-    if (!from) return;
+  // Plans from where the robot BELIEVED it was when asking (its estimate), with
+  // the true floor plan (simplified: a real robot would plan on its map), trying
+  // patrol points in order until one is reachable. Changes nothing itself: the
+  // outcome is applied at its tick.
+  private async plan(from: Pose, firstGoal: number, obstacles: Float64Array): Promise<PlanOutcome> {
     const patrol = this.scenario.patrol;
-    const obstacles = this.obstacles();
     const skipped: number[] = [];
+    let goal = firstGoal, plans = 0, ms = 0, expanded = 0;
     for (let k = 0; k < patrol.length; k++) {
       const res = await engine().plan({
         obstacles, width: this.W, height: this.H, resolution: GRID_RESOLUTION, robotRadius: this.scenario.robot.radius,
-        start: { x: from.x, y: from.y }, goal: patrol[this.goal],
+        start: { x: from.x, y: from.y }, goal: patrol[goal],
       });
-      this.plans++;
-      this.lastPlanMs = res.planMs;
-      this.expanded = res.expanded;
-      if (this.dirty) return; // the world changed meanwhile; plan again
-      if (res.status === "found") {
-        this.path = res.path;
-        this.pi = 1;
-        this.drive = "driving";
-        this.skipped = skipped;
-        return this.drawPath();
-      }
-      if (res.status === "start-blocked") {
-        this.drive = "stuck";
-        this.path = [];
-        this.skipped = skipped;
-        return this.drawPath();
-      }
-      skipped.push(this.goal);
-      this.goal = (this.goal + 1) % patrol.length;
+      plans++;
+      ms = res.planMs;
+      expanded = res.expanded;
+      if (res.status === "found" || res.status === "start-blocked") return { status: res.status, path: res.path, goal, skipped, plans, ms, expanded };
+      skipped.push(goal);
+      goal = (goal + 1) % patrol.length;
     }
-    this.drive = "no-path";
-    this.path = [];
-    this.skipped = skipped;
+    return { status: "no-path", path: [], goal, skipped, plans, ms, expanded };
+  }
+
+  private applyPlan(o: PlanOutcome): void {
+    this.nextPlanTick = this.tick + PLAN_GAP_TICKS;
+    if (o === "failed") {
+      this.dirty = true;
+      return;
+    }
+    this.plans += o.plans;
+    this.lastPlanMs = o.ms;
+    this.expanded = o.expanded;
+    if (this.dirty) return; // the world changed while planning: plan again
+    this.goal = o.goal;
+    this.skipped = o.skipped;
+    if (o.status === "found") {
+      this.path = o.path;
+      this.pi = 1;
+      this.drive = "driving";
+    } else {
+      this.drive = o.status === "start-blocked" ? "stuck" : "no-path";
+      this.path = [];
+    }
     this.drawPath();
   }
 
@@ -824,7 +869,7 @@ export class Field {
       if (this.pi >= this.path.length) {
         this.goal = (this.goal + 1) % this.scenario.patrol.length;
         this.dirty = true;
-        this.lastPlanAt = 0;
+        this.nextPlanTick = 0;
       }
       return 0;
     }
@@ -836,11 +881,11 @@ export class Field {
     const heading = wrapAngle(r.theta + turn);
     if (d > 0 && this.blocked(r, { x: r.x + d * Math.cos(heading), y: r.y + d * Math.sin(heading) })) {
       d = 0; // bumper: the wheels stop, so odometry sees no forward motion either
-      if (performance.now() - this.bumpedAt > 600) {
+      if (this.tick - this.bumpTick > 30) { // a new bump, not the same one 0.6 s (simulated) later
         this.bumps++;
         this.dirty = true; // replan (from the belief)
       }
-      this.bumpedAt = performance.now();
+      this.bumpTick = this.tick;
     }
     r.theta = heading;
     r.x += d * Math.cos(heading);
@@ -848,7 +893,7 @@ export class Field {
     // The same command, as odometry: rotate by `turn`, then move d forward.
     const motion = { x: d * Math.cos(turn), y: d * Math.sin(turn), theta: turn };
     this.belief = composePoses(b, motion);
-    for (const c of this.openCaptures) c.odo = composePoses(c.odo, motion);
+    for (const c of this.pendingScans) c.odo = composePoses(c.odo, motion);
     return d;
   }
 
@@ -865,31 +910,52 @@ export class Field {
   }
 
   // ===================== engine: scanning & tracking =====================
-  // Advances the simulated world by dt: robot motion in small slices, and a scan
-  // pose captured each time the simulated clock passes a scan time. If the engine
-  // is behind (queue full), simulated time stops until it catches up, so the
-  // estimators always see an honest 10 Hz sensor even on a slow machine.
+  // Advances simulated time by whole ticks for the wall time `dt` that passed.
+  // Per tick, in this order: answers due now take effect (or time waits for
+  // them), a scan is captured every SCAN_TICKS, a route may be requested, and
+  // the robot moves. Nothing here depends on wall-clock timing.
   private advanceWorld(dt: number): number {
+    if (this.engineState !== "ready") return 0; // simulated time starts with the engine
+    this.simDebt = Math.min(MAX_DEBT, this.simDebt + dt);
     let moved = 0;
-    let remaining = dt;
-    while (remaining > 1e-9) {
-      if (this.engineState === "ready" && this.scanQueue.length >= MAX_QUEUED_SCANS) break;
-      const h = Math.min(remaining, SIM_STEP, Math.max(this.nextScanIn, 1e-6));
-      moved += this.driveStep(h);
-      remaining -= h;
-      this.nextScanIn -= h;
-      if (this.nextScanIn <= 1e-9) {
-        if (this.engineState === "ready") {
-          const capture: ScanCapture = { pose: { ...this.robot }, odo: { x: 0, y: 0, theta: 0 } };
-          this.scanQueue.push(capture);
-          this.openCaptures.add(capture);
-        }
-        this.nextScanIn = SCAN_PERIOD;
+    while (this.simDebt >= SIM_STEP - 1e-9) {
+      if (!this.applyDue()) {
+        this.simDebt = Math.min(this.simDebt, SIM_STEP); // waiting for the engine: don't bank time
+        break;
       }
+      if (this.tick % SCAN_TICKS === 0) {
+        const capture: ScanCapture = { pose: { ...this.robot }, odo: { x: 0, y: 0, theta: 0 }, applyTick: this.tick + RESULT_TICKS };
+        this.scanQueue.push(capture);
+        this.pendingScans.push(capture);
+      }
+      this.maybePlan();
+      moved += this.driveStep(SIM_STEP);
+      this.tick++;
+      this.simDebt -= SIM_STEP;
     }
     return moved;
   }
 
+  // Applies every answer due at this tick, oldest first. Returns false if one is
+  // due but has not arrived: then simulated time must wait.
+  private applyDue(): boolean {
+    while (this.pendingScans.length && this.pendingScans[0].applyTick <= this.tick) {
+      const c = this.pendingScans[0];
+      if (!c.result) return false;
+      this.pendingScans.shift();
+      if (c.result !== "failed") this.applyStep(c, c.result);
+    }
+    const p = this.pendingPlan;
+    if (p && p.applyTick <= this.tick) {
+      if (!p.outcome) return false;
+      this.pendingPlan = null;
+      this.applyPlan(p.outcome);
+    }
+    return true;
+  }
+
+  // Sends captured scans to the engine one at a time, in order. Answers are only
+  // stored here; they take effect at their tick (applyDue).
   private maybeScan(): void {
     if (this.mode === "match" || this.scanInFlight || this.engineState !== "ready" || !this.scanQueue.length) return;
     this.scanInFlight = true;
@@ -914,50 +980,59 @@ export class Field {
       const track = this.trackerRunning;
       // The first tracked scan is taken at the estimators' starting pose: no motion yet.
       const trueMotion = track && this.lastTrackedPose ? relativePose(this.lastTrackedPose, pose) : { x: 0, y: 0, theta: 0 };
+      if (track) this.lastTrackedPose = pose;
       const res = await e.step({
         walls: this.obstacles(), truePose: pose, beams: BEAMS, maxRange,
         noise: lostMode ? this.noise : 0.005, seed: this.seed++, track, owner: this.owner,
         trueMotion, wheels: this.wheels,
       });
-      this.openCaptures.delete(capture);
       if (gen !== this.generation) return;
-      if (track) this.lastTrackedPose = pose;
-      this.scanMs = res.engineMs;
-      this.applyScan(pose, res.ranges, maxRange);
-      if (res.estimate) {
-        this.estimate = res.estimate;
-        this.lost = res.lost;
-        if (res.lost) this.lostScans++;
-        this.error = Math.hypot(res.estimate.x - pose.x, res.estimate.y - pose.y);
-        const last = this.estPts[this.estPts.length - 1];
-        if (!last || Math.hypot(last.x - res.estimate.x, last.y - res.estimate.y) > 0.03) {
-          this.estPts.push({ x: res.estimate.x, y: res.estimate.y });
-          if (this.estPts.length > MAX_LINE) this.estPts.shift();
-          this.setLine(this.estTrail, this.estPts);
-        }
-      }
-      if (res.map) {
-        const m = res.map;
-        // The estimate is for the moment of capture; bring it up to now with the
-        // motion commanded since then.
-        this.belief = composePoses(m.estimate, capture.odo);
-        this.mapEstimate = m.estimate;
-        this.mapLost = m.lost;
-        this.mapWeak = m.weak;
-        this.inliers = m.lost ? null : m.inliers;
-        if (m.lost) this.mapLostScans++;
-        this.mapError = Math.hypot(m.estimate.x - pose.x, m.estimate.y - pose.y);
-        const last = this.mapPts[this.mapPts.length - 1];
-        if (!last || Math.hypot(last.x - m.estimate.x, last.y - m.estimate.y) > 0.03) {
-          this.mapPts.push({ x: m.estimate.x, y: m.estimate.y });
-          if (this.mapPts.length > MAX_LINE) this.mapPts.shift();
-          this.setLine(this.mapTrail, this.mapPts, 0.008);
-        }
-      }
+      capture.result = res;
     };
     run()
-      .catch(() => this.openCaptures.delete(capture))
+      .catch(() => {
+        if (gen === this.generation) capture.result = "failed"; // never stall the world on an engine error
+      })
       .finally(() => (this.scanInFlight = false));
+  }
+
+  // A scan's answer takes effect: draw the scan, update both estimators' state.
+  private applyStep(capture: ScanCapture, res: StepResult): void {
+    const pose = capture.pose;
+    this.scanMs = res.engineMs;
+    this.applyScan(pose, res.ranges, this.mode === "lost" ? this.range : 8);
+    if (res.estimate) {
+      this.estimate = res.estimate;
+      this.lost = res.lost;
+      if (res.lost) this.lostScans++;
+      this.error = Math.hypot(res.estimate.x - pose.x, res.estimate.y - pose.y);
+      const last = this.estPts[this.estPts.length - 1];
+      if (!last || Math.hypot(last.x - res.estimate.x, last.y - res.estimate.y) > 0.03) {
+        this.estPts.push({ x: res.estimate.x, y: res.estimate.y });
+        if (this.estPts.length > MAX_LINE) this.estPts.shift();
+        this.setLine(this.estTrail, this.estPts);
+      }
+    }
+    if (res.map) {
+      const m = res.map;
+      // The estimate is for the moment of capture; bring it up to now with the
+      // motion commanded since then.
+      this.belief = composePoses(m.estimate, capture.odo);
+      this.mapEstimate = m.estimate;
+      this.mapLost = m.lost;
+      this.mapWeak = m.weak;
+      this.inliers = m.lost ? null : m.inliers;
+      if (m.lost) this.mapLostScans++;
+      this.mapError = Math.hypot(m.estimate.x - pose.x, m.estimate.y - pose.y);
+      const last = this.mapPts[this.mapPts.length - 1];
+      if (!last || Math.hypot(last.x - m.estimate.x, last.y - m.estimate.y) > 0.03) {
+        this.mapPts.push({ x: m.estimate.x, y: m.estimate.y });
+        if (this.mapPts.length > MAX_LINE) this.mapPts.shift();
+        this.setLine(this.mapTrail, this.mapPts, 0.008);
+      }
+    }
+    this.trace?.push({ tick: this.tick, truth: { ...pose }, map: res.map ? { ...res.map.estimate } : null,
+      tracker: res.estimate ? { ...res.estimate } : null, belief: this.belief ? { ...this.belief } : null });
   }
 
   // The robot's map, as the C++ engine built it (occupied-cell hit points).
@@ -1105,7 +1180,6 @@ export class Field {
 
     if (this.mode === "match") this.updateIcp(now);
     else {
-      this.maybePlan(now);
       const d = this.advanceWorld(dt);
       if (this.trackerRunning) this.driven += d;
       if (d > 0 && now - this.pathDrawnAt > 120) {
@@ -1151,7 +1225,7 @@ export class Field {
         lostScans: this.lostScans, error: this.error, mapError: this.mapError, mapLost: this.mapLost,
         mapLostScans: this.mapLostScans, mapWeak: this.mapWeak, inliers: this.inliers, mapPoints: this.mapCount,
         driven: this.driven, scanMs: this.scanMs, localizing: this.mode !== "match" && !this.belief, bumps: this.bumps,
-        bumped: performance.now() - this.bumpedAt < 1000,
+        bumped: this.tick - this.bumpTick < 50, // within the last simulated second
       });
       // Dev builds only (removed from production): lets browser tests read engine timing.
       if (import.meta.env.DEV && this.mode === "lost")

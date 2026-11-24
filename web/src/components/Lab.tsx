@@ -3,8 +3,10 @@ import { MAX_BOXES, type Field, type FieldStats } from "../field/Field";
 import { FieldView } from "../field/FieldView";
 import { IcpDemo, type IcpMethod } from "../icp/IcpDemo";
 import { formatLength } from "../lib/frames";
+import { pushSample, type LostSample } from "../lib/labCharts";
 import { decodeLab, encodeLab, type LabLimits, type LabMode } from "../lib/share";
 import { homeScenario } from "../scenarios/home";
+import { LostHistory, PassHistory } from "./LabCharts";
 import { Chip, Segmented, driveChip, type Tone } from "./ui";
 
 const MODES: Record<LabMode, { n: number; tab: string; title: string; hint: string }> = {
@@ -32,6 +34,9 @@ const LIMITS: LabLimits = {
   height: homeScenario.bounds.height,
 };
 const FURNITURE_IDS = homeScenario.furniture.map((f) => f.id);
+const HISTORY_SECONDS = 35;
+const HISTORY_EVERY_MS = 500;
+const HISTORY_CAPACITY = (HISTORY_SECONDS * 1000) / HISTORY_EVERY_MS;
 
 export function Lab() {
   // A shared link (?lab=...) sets the starting tab, sensor, guess, and furniture.
@@ -44,6 +49,9 @@ export function Lab() {
   const [copied, setCopied] = useState<"idle" | "done" | "failed">("idle");
   const [method, setMethod] = useState<IcpMethod>("p2l");
   const [icpText, setIcpText] = useState({ tone: "run" as Tone, chip: "Loading engine", pass: "–", error: "–", rmse: "–" });
+  const [passes, setPasses] = useState<{ rmse: number[]; error: number[]; shown: number } | null>(null);
+  const [history, setHistory] = useState<LostSample[]>([]);
+  const statsRef = useRef<FieldStats | null>(null);
   const panel = useRef<HTMLDivElement>(null);
   const field = useRef<Field | null>(null);
   const icp = useMemo(() => new IcpDemo(), []);
@@ -110,9 +118,30 @@ export function Lab() {
         error: formatLength(icp.errors(frame.pose).position),
         rmse: rmse === null ? "–" : formatLength(rmse),
       });
+      const run = icp.run;
+      setPasses(run && !icp.dragging && run.rmse.length === run.poses.length - 1 // never let a chart break the lab
+        ? { rmse: Array.from(run.rmse), error: run.poses.map((p) => icp.errors(p).position), shown: frame.pass }
+        : null);
     }, 100);
     return () => window.clearInterval(id);
   }, [mode, icp]);
+
+  // "Get it lost" history: one reading every 0.5 s of the newest stats.
+  useEffect(() => {
+    if (mode !== "lost") return;
+    setHistory([]);
+    const id = window.setInterval(() => {
+      const s = statsRef.current;
+      if (!s || s.engine !== "ready") return;
+      const sample: LostSample = { withMap: s.mapError, noMap: s.error, inliers: s.mapLost ? null : s.inliers };
+      setHistory((h) => pushSample(h, sample, HISTORY_CAPACITY));
+    }, HISTORY_EVERY_MS);
+    return () => window.clearInterval(id);
+  }, [mode]);
+  const onStats = (s: FieldStats) => {
+    statsRef.current = s;
+    setStats(s);
+  };
 
   const choose = (m: LabMode) => {
     if (m === mode) return;
@@ -172,7 +201,7 @@ export function Lab() {
         </div>
       </div>
       <div className="lab-stage">
-        <FieldView mode={mode} icp={icp} panelRef={panel} fieldRef={field} onStats={setStats} className="lab-field" label={`Experiment: ${info.title}`}>
+        <FieldView mode={mode} icp={icp} panelRef={panel} fieldRef={field} onStats={onStats} className="lab-field" label={`Experiment: ${info.title}`}>
           <div className="f-ui br"><span className="pill mono">Live C++ engine · Simulated world</span></div>
         </FieldView>
         <div className="panel" id="lab-panel" role="tabpanel" aria-labelledby={`tab-${mode}`} ref={panel} aria-live="polite">
@@ -191,6 +220,8 @@ export function Lab() {
                 </div>
               ))}
             </dl>
+            {mode === "match" && passes && <PassHistory rmse={passes.rmse} error={passes.error} shown={passes.shown} />}
+            {mode === "lost" && <LostHistory samples={history} capacity={HISTORY_CAPACITY} seconds={HISTORY_SECONDS} />}
             <div className="controls">
               {mode === "match" && (
                 <>
@@ -228,7 +259,7 @@ export function Lab() {
                     onChange={(v) => setWheels(v === "wheels")}
                   />
                   <div className="row">
-                    <button type="button" className="btn ghost" onClick={() => field.current?.restartTracker()}>Re-map and restart</button>
+                    <button type="button" className="btn ghost" onClick={() => { field.current?.restartTracker(); setHistory([]); }}>Re-map and restart</button>
                     {share}
                   </div>
                   <ul className="legend" aria-label="Legend">
