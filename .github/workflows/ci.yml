@@ -1,12 +1,21 @@
 name: C++ build and tests
-on: [push, pull_request]
+on:
+  push:
+  pull_request:
+  schedule:
+    - cron: "17 6 * * 1" # Mondays: also on macOS
+  workflow_dispatch: # Actions tab > Run workflow: also on macOS
 permissions:
   contents: read
 jobs:
   test:
     strategy:
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        # Linux on every push. macOS weekly and on demand: hosted macOS runners
+        # are scarce, and a push on 2026-11-24 failed only because no macOS runner
+        # was assigned within 15 minutes (the code itself passed). Development
+        # happens on a Mac, where every change is built and tested locally.
+        os: ${{ fromJSON((github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && '["ubuntu-latest", "macos-latest"]' || '["ubuntu-latest"]') }}
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
